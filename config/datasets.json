@@ -1,0 +1,11 @@
+{
+  "datasets": [
+    {
+      "id": "tcga",
+      "name": "TCGA Pan-Cancer",
+      "type": "r2",
+      "baseUrl": "https://pub-960ed97df8134c4a848e08ddb6cc560e.r2.dev"
+    }
+  ],
+  "_comment_future": "未來要加自己的 OSCC cohort，就在 datasets 陣列再加一筆，例如：{ id: 'oscc', name: 'Our OSCC Cohort', type: 'r2', baseUrl: 'https://.....r2.dev' }。只要 OSCC 用同一條 build_r2_dataset.py pipeline 產生、格式相同，這裡加一行即可，程式不用改。"
+}

@@ -1,0 +1,14 @@
+每個檔在幹嘛(一句話版)
+
+core/data.js:最底層工具——抓檔、解壓 .gz、解析 CSV。其他檔都靠它。
+core/dataset.js:資料來源物件。「一個資料來源的所有存取」都在這——這就是 OSCC 未來插入的地方。
+core/stats.js:統計(現在只有 U-test,未來 log-rank 加這)。
+core/plots.js:畫圖(scatter、bar,未來 heatmap 加這)。
+analyses/groupCompare.js:你現在的分析,自成一個模組。
+app.js:薄外殼——載入資料、資料來源下拉、分析選單。
+index.html / style.css:頁面與樣式。
+
+你不用全看懂,只要記住分工:要改某個分析,就只動那一個檔;要加分析,就加一個新檔 + 在 app.js 的 ANALYSES 加一行。 這就是你要的好維護性。
+兩件已經替你鋪好的未來路
+OSCC 整合:datasets.json 裡已經留好位置(看檔尾註解)。OSCC 跑同一條 pipeline → 在那裡加一行 → 工具上方「Dataset」下拉就會多一個選項,可切換。今天那個下拉雖然只有一個選項,但切換機制已經寫好了。
+轉 Claude Code:現在這個資料夾結構,就是 agent 最好接手的形態。等檔案變多、或要做 GSEA/免疫分數,你把整個 tcga-tool 資料夾交給 Claude Code,它能直接跨檔讀寫,不用再一個個複製貼上。今天先用網頁版把結構立對,就是為了那一天。

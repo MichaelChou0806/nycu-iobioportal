@@ -1,0 +1,303 @@
+{
+  "_comment": "臨床維度定義（TCGA）。每個 cohort 一份，未來 OSCC 套同格式即可（相同維度沿用、不同維度各自定義、TCGA 沒有的如 ENE 在 OSCC 版加上去）。type=binary 是天然兩組；type=ordinal 是有序多級，使用者可把每個級別指派到 baseline/advanced/ignore。advancedSide 標哪一側帶星號。field 指這個維度需要 clinical 的哪個欄位（該欄不存在或全空 -> 此維度在該範圍不可用，介面自動灰掉）。",
+  "dimensions": [
+    {
+      "id": "sex",
+      "name": "Sex",
+      "type": "binary",
+      "field": "gender",
+      "baseline": {
+        "label": "Male",
+        "values": [
+          "MALE",
+          "Male",
+          "male"
+        ]
+      },
+      "advanced": {
+        "label": "Female",
+        "values": [
+          "FEMALE",
+          "Female",
+          "female"
+        ]
+      }
+    },
+    {
+      "id": "age",
+      "name": "Age",
+      "type": "binary",
+      "field": "age",
+      "numericSplit": {
+        "cutoff": 60,
+        "baselineLabel": "<60",
+        "advancedLabel": ">=60"
+      }
+    },
+    {
+      "id": "alcohol",
+      "name": "Alcohol",
+      "type": "binary",
+      "field": "alcohol_history_documented",
+      "baseline": {
+        "label": "Alcohol-",
+        "values": [
+          "NO",
+          "No",
+          "no"
+        ]
+      },
+      "advanced": {
+        "label": "Alcohol+",
+        "values": [
+          "YES",
+          "Yes",
+          "yes"
+        ]
+      }
+    },
+    {
+      "id": "t_stage",
+      "name": "T stage",
+      "type": "ordinal",
+      "field": "pathologic_T",
+      "advancedSide": "advanced",
+      "_levelMatch": "用開頭比對：把 pathologic_T 值（如 T2a、T4b）對到 T1/T2/T3/T4。",
+      "levels": [
+        {
+          "id": "T1",
+          "label": "T1",
+          "prefix": "T1",
+          "default": "baseline"
+        },
+        {
+          "id": "T2",
+          "label": "T2",
+          "prefix": "T2",
+          "default": "baseline"
+        },
+        {
+          "id": "T3",
+          "label": "T3",
+          "prefix": "T3",
+          "default": "advanced"
+        },
+        {
+          "id": "T4",
+          "label": "T4",
+          "prefix": "T4",
+          "default": "advanced"
+        }
+      ]
+    },
+    {
+      "id": "n_stage",
+      "name": "N stage",
+      "type": "binary",
+      "field": "node_status",
+      "_note": "node_status 是先前已算好的 N- / N+。",
+      "baseline": {
+        "label": "N-",
+        "values": [
+          "N-"
+        ]
+      },
+      "advanced": {
+        "label": "N+",
+        "values": [
+          "N+"
+        ]
+      }
+    },
+    {
+      "id": "stage",
+      "name": "Stage",
+      "type": "ordinal",
+      "field": "pathologic_stage",
+      "advancedSide": "advanced",
+      "_levelMatch": "pathologic_stage 值如 'Stage IVA'，對到 I/II/III/IV（用羅馬數字比對，注意 IV 要先於 I 比對以免誤判）。",
+      "levels": [
+        {
+          "id": "I",
+          "label": "Stage I",
+          "roman": "I",
+          "default": "baseline"
+        },
+        {
+          "id": "II",
+          "label": "Stage II",
+          "roman": "II",
+          "default": "baseline"
+        },
+        {
+          "id": "III",
+          "label": "Stage III",
+          "roman": "III",
+          "default": "baseline"
+        },
+        {
+          "id": "IV",
+          "label": "Stage IV",
+          "roman": "IV",
+          "default": "advanced"
+        }
+      ]
+    },
+    {
+      "id": "grade",
+      "name": "Grade",
+      "type": "ordinal",
+      "field": "neoplasm_histologic_grade",
+      "advancedSide": "advanced",
+      "_levelMatch": "neoplasm_histologic_grade 值如 G1/G2/G3/G4（GX、GB 等其他值不對到任何級別、視為無資料）。",
+      "levels": [
+        {
+          "id": "G1",
+          "label": "G1",
+          "match": [
+            "G1"
+          ],
+          "default": "baseline"
+        },
+        {
+          "id": "G2",
+          "label": "G2",
+          "match": [
+            "G2"
+          ],
+          "default": "baseline"
+        },
+        {
+          "id": "G3",
+          "label": "G3",
+          "match": [
+            "G3"
+          ],
+          "default": "advanced"
+        },
+        {
+          "id": "G4",
+          "label": "G4",
+          "match": [
+            "G4"
+          ],
+          "default": "advanced"
+        }
+      ]
+    },
+    {
+      "id": "lvi",
+      "name": "LVI",
+      "type": "binary",
+      "field": "lymphovascular_invasion_present",
+      "baseline": {
+        "label": "LVI-",
+        "values": [
+          "NO",
+          "No",
+          "no"
+        ]
+      },
+      "advanced": {
+        "label": "LVI+",
+        "values": [
+          "YES",
+          "Yes",
+          "yes"
+        ]
+      }
+    },
+    {
+      "id": "pni",
+      "name": "PNI",
+      "type": "binary",
+      "field": "perineural_invasion_present",
+      "baseline": {
+        "label": "PNI-",
+        "values": [
+          "NO",
+          "No",
+          "no"
+        ]
+      },
+      "advanced": {
+        "label": "PNI+",
+        "values": [
+          "YES",
+          "Yes",
+          "yes"
+        ]
+      }
+    },
+    {
+      "id": "margin",
+      "name": "Margin",
+      "type": "binary",
+      "field": "margin_status",
+      "baseline": {
+        "label": "Margin-",
+        "values": [
+          "Negative",
+          "NEGATIVE",
+          "negative"
+        ]
+      },
+      "advanced": {
+        "label": "Margin+",
+        "values": [
+          "Positive",
+          "POSITIVE",
+          "positive"
+        ]
+      }
+    },
+    {
+      "id": "vital",
+      "name": "Vital",
+      "type": "binary",
+      "field": "vital_status",
+      "baseline": {
+        "label": "Alive",
+        "values": [
+          "Alive",
+          "ALIVE",
+          "alive"
+        ]
+      },
+      "advanced": {
+        "label": "Dead",
+        "values": [
+          "Dead",
+          "DEAD",
+          "dead"
+        ]
+      }
+    },
+    {
+      "id": "recurrence",
+      "name": "Recurrence",
+      "type": "binary",
+      "field": "new_tumor_event_after_initial_treatment",
+      "baseline": {
+        "label": "Recur-",
+        "values": [
+          "NO",
+          "No",
+          "no"
+        ]
+      },
+      "advanced": {
+        "label": "Recur+",
+        "values": [
+          "YES",
+          "Yes",
+          "yes"
+        ]
+      }
+    }
+  ],
+  "warnThresholds": {
+    "minPerGroup": 10,
+    "maxRatio": 10
+  }
+}
