@@ -141,7 +141,8 @@
           "roman": "IV",
           "default": "advanced"
         }
-      ]
+      ],
+      "labelPrefix": "Stage "
     },
     {
       "id": "grade",

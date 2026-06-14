@@ -8,11 +8,13 @@
 
 import { loadDatasetConfigs } from "./core/dataset.js";
 import { clinicalOverview } from "./analyses/clinicalOverview.js";
+import { survival } from "./analyses/survival.js";
 import { groupCompare } from "./analyses/groupCompare.js";
 
 // 分析註冊表：新增分析 = import 進來 + 在這裡加一行
 const ANALYSES = [
   clinicalOverview,
+  survival,
   groupCompare,
 ];
 

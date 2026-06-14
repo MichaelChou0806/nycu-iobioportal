@@ -95,3 +95,150 @@ export function zscoreRow(vals) {
   if (s === 0) return vals.map(v => (v == null || !isFinite(v)) ? null : 0);
   return vals.map(v => (v == null || !isFinite(v)) ? null : (v - m) / s);
 }
+
+// =====================================================================
+// 生存分析：Kaplan–Meier、Log-rank、單變量 Cox PH（純前端、確定性）
+// 複用本檔既有的 erf()。times[]=時間, events[]=1事件/0censor, group/x[]=0或1
+// =====================================================================
+
+function normCDF(z) { return 0.5 * (1 + erf(z / Math.SQRT2)); }
+function chiSqP1(x) { return 2 * (1 - normCDF(Math.sqrt(Math.max(0, x)))); } // df=1 上尾 p
+
+// Kaplan–Meier 階梯點：回傳 [{t, surv, atRisk, nEvent, nCensor}]（含起點 t=0, surv=1）
+export function kaplanMeier(times, events) {
+  const order = times.map((t, i) => i).sort((a, b) => times[a] - times[b]);
+  const n = order.length;
+  const pts = [{ t: 0, surv: 1, atRisk: n, nEvent: 0, nCensor: 0 }];
+  let surv = 1, atRisk = n, i = 0;
+  while (i < n) {
+    const t = times[order[i]];
+    let d = 0, c = 0;
+    while (i < n && times[order[i]] === t) { if (events[order[i]]) d++; else c++; i++; }
+    if (d > 0) surv *= (1 - d / atRisk);
+    pts.push({ t, surv, atRisk, nEvent: d, nCensor: c });
+    atRisk -= (d + c);
+  }
+  return pts;
+}
+
+// Log-rank（Mantel–Cox），兩組 group∈{0,1}。回傳 {chiSq, p, O1, E1, V}
+export function logRank(times, events, group) {
+  const n = times.length;
+  const order = times.map((t, i) => i).sort((a, b) => times[a] - times[b]);
+  let O1 = 0, E1 = 0, V = 0;
+  let atRisk = n, atRisk1 = group.reduce((s, g) => s + (g === 1 ? 1 : 0), 0);
+  let i = 0;
+  while (i < n) {
+    const t = times[order[i]];
+    let d = 0, d1 = 0, leave = 0, leave1 = 0, j = i;
+    while (j < n && times[order[j]] === t) {
+      const g = group[order[j]] === 1 ? 1 : 0;
+      if (events[order[j]]) { d++; if (g) d1++; }
+      leave++; if (g) leave1++; j++;
+    }
+    if (d > 0) {
+      E1 += d * atRisk1 / atRisk;
+      O1 += d1;
+      if (atRisk > 1) V += d * (atRisk1 / atRisk) * (1 - atRisk1 / atRisk) * (atRisk - d) / (atRisk - 1);
+    }
+    atRisk -= leave; atRisk1 -= leave1; i = j;
+  }
+  const chiSq = V > 0 ? (O1 - E1) * (O1 - E1) / V : 0;
+  return { chiSq, p: V > 0 ? chiSqP1(chiSq) : 1, O1, E1, V };
+}
+
+// 單變量 Cox PH（x 為 0/1），Breslow 處理 ties，Newton–Raphson。
+// 回傳 {beta, hr, se, ciLow, ciHigh, p}
+export function coxPH1(times, events, x) {
+  const n = times.length;
+  const order = times.map((t, i) => i).sort((a, b) => times[a] - times[b]); // 時間遞增
+  function scoreInfo(beta) {
+    let U = 0, I = 0, S0 = 0, S1 = 0, S2 = 0, i = n - 1;
+    while (i >= 0) {                    // 由最大時間往最小累積 risk set（time >= t）
+      const t = times[order[i]];
+      let j = i, dSumX = 0, dCount = 0;
+      while (j >= 0 && times[order[j]] === t) {
+        const xv = x[order[j]], w = Math.exp(beta * xv);
+        S0 += w; S1 += w * xv; S2 += w * xv * xv;
+        if (events[order[j]]) { dSumX += xv; dCount++; }
+        j--;
+      }
+      if (dCount > 0 && S0 > 0) {       // Breslow：同一時間的事件共用 risk set
+        const m = S1 / S0;
+        U += dSumX - dCount * m;
+        I += dCount * (S2 / S0 - m * m);
+      }
+      i = j;
+    }
+    return { U, I };
+  }
+  let beta = 0;
+  for (let it = 0; it < 50; it++) {
+    const { U, I } = scoreInfo(beta);
+    if (!isFinite(I) || I === 0) break;
+    const step = U / I;
+    beta += step;
+    if (Math.abs(step) < 1e-7) break;
+  }
+  const { I } = scoreInfo(beta);
+  const se = I > 0 ? 1 / Math.sqrt(I) : NaN;
+  const hr = Math.exp(beta);
+  const z = (se && isFinite(se)) ? beta / se : 0;
+  const p = (se && isFinite(se)) ? 2 * (1 - normCDF(Math.abs(z))) : 1;
+  return { beta, hr, se, ciLow: Math.exp(beta - 1.96 * se), ciHigh: Math.exp(beta + 1.96 * se), p };
+}
+
+// =====================================================================
+// 分層（stratified）log-rank 與 Cox —— pan-cancer pooled 用（按癌種分層）
+// 在每個 stratum（癌種）內各自建 risk set，再加總，控制癌種基線差異。
+// =====================================================================
+
+// 分層 log-rank：strata[] 為每個樣本的分層標籤
+export function logRankStratified(times, events, group, strata) {
+  const buckets = {};
+  for (let i = 0; i < times.length; i++) (buckets[strata[i]] || (buckets[strata[i]] = [])).push(i);
+  let O = 0, E = 0, V = 0;
+  for (const s in buckets) {
+    const idx = buckets[s];
+    const r = logRank(idx.map(i => times[i]), idx.map(i => events[i]), idx.map(i => group[i]));
+    O += r.O1; E += r.E1; V += r.V;
+  }
+  const chiSq = V > 0 ? (O - E) * (O - E) / V : 0;
+  return { chiSq, p: V > 0 ? chiSqP1(chiSq) : 1, O1: O, E1: E, V };
+}
+
+// 分層 Cox（單變量 x∈{0,1}，Breslow），偏似然在每個 stratum 內各自累積 risk set
+export function coxPH1Stratified(times, events, x, strata) {
+  const buckets = {};
+  for (let i = 0; i < times.length; i++) (buckets[strata[i]] || (buckets[strata[i]] = [])).push(i);
+  const strataList = Object.values(buckets).map(idx => {
+    const t = idx.map(i => times[i]), e = idx.map(i => events[i]), xx = idx.map(i => x[i]);
+    const order = t.map((_, i) => i).sort((a, b) => t[a] - t[b]);
+    return { t, e, x: xx, order };
+  });
+  function scoreInfo(beta) {
+    let U = 0, I = 0;
+    for (const s of strataList) {
+      let S0 = 0, S1 = 0, S2 = 0, i = s.order.length - 1;
+      while (i >= 0) {
+        const tt = s.t[s.order[i]];
+        let j = i, dSumX = 0, dCount = 0;
+        while (j >= 0 && s.t[s.order[j]] === tt) {
+          const xv = s.x[s.order[j]], w = Math.exp(beta * xv);
+          S0 += w; S1 += w * xv; S2 += w * xv * xv;
+          if (s.e[s.order[j]]) { dSumX += xv; dCount++; }
+          j--;
+        }
+        if (dCount > 0 && S0 > 0) { const m = S1 / S0; U += dSumX - dCount * m; I += dCount * (S2 / S0 - m * m); }
+        i = j;
+      }
+    }
+    return { U, I };
+  }
+  let beta = 0;
+  for (let it = 0; it < 50; it++) { const { U, I } = scoreInfo(beta); if (!isFinite(I) || I === 0) break; const step = U / I; beta += step; if (Math.abs(step) < 1e-7) break; }
+  const { I } = scoreInfo(beta);
+  const se = I > 0 ? 1 / Math.sqrt(I) : NaN;
+  const hr = Math.exp(beta), z = (se && isFinite(se)) ? beta / se : 0, p = (se && isFinite(se)) ? 2 * (1 - normCDF(Math.abs(z))) : 1;
+  return { beta, hr, se, ciLow: Math.exp(beta - 1.96 * se), ciHigh: Math.exp(beta + 1.96 * se), p };
+}

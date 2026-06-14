@@ -17,6 +17,7 @@ import { loadLast, saveLast, exportState, importStateFromFile,
 import { mannWhitney, median, mean, sd, log2FC, benjaminiHochberg, zscoreRow, pStars }
   from "../core/stats.js";
 import { heatmapSVG, multiBarSVG } from "../core/plots.js";
+import { getGOIs, setGOIs, onGOIsChanged, parseGenes } from "../core/gois.js";
 
 let stylesInjected = false;
 function injectStyles() {
@@ -79,12 +80,14 @@ function labelsOf(dim, assignment) {
   return ["baseline", "advanced"];
 }
 function ordinalRange(dim, assignment, side) {
+  const prefix = dim.labelPrefix || "";
   const order = dim.levels.map(l => l.id);
   const ids = dim.levels.filter(lv => ((assignment && assignment[lv.id]) || lv.default) === side).map(lv => lv.id);
   if (!ids.length) return side === "baseline" ? "Baseline" : "Advanced";
   const idxs = ids.map(id => order.indexOf(id)).sort((a, b) => a - b);
   const contiguous = idxs.every((v, i) => i === 0 || v === idxs[i - 1] + 1);
-  return (contiguous && ids.length > 1) ? `${ids[0]}–${ids[ids.length - 1]}` : ids.join(",");
+  const range = (contiguous && ids.length > 1) ? `${ids[0]}–${ids[ids.length - 1]}` : ids.join(",");
+  return prefix + range;
 }
 // 只顯示顯著星號；不顯著回空字串（不標 ns）
 function starsOf(q) { const s = pStars(q); return (s === "ns") ? "" : s; }
@@ -107,6 +110,8 @@ export const clinicalOverview = {
     const nTumorOf = Object.fromEntries(dataset.cancers.map(c => [c.code, c.n_tumor]));
 
     let state = reconcile(loadLast(), avail);
+    const _shared = getGOIs();
+    if (_shared.length) state.genes = _shared; else if (state.genes.length) setGOIs(state.genes);
     let dragCancer = null, dragDim = null;
     let lastResults = null;
 
@@ -132,7 +137,7 @@ export const clinicalOverview = {
 
         <details class="co-sec" open>
           <summary class="co-sum">Clinical dimensions — drag (≡) to reorder; tick to include</summary>
-          <div class="co-toolbar" style="margin-top:8px"><button class="co-mini" id="ds-def">Default order</button></div>
+          <div class="co-toolbar" style="margin-top:8px"><button class="co-mini" id="ds-all">Select all</button><button class="co-mini" id="ds-none">Select none</button><span class="co-sep"></span><button class="co-mini" id="ds-def">Default order</button></div>
           <div id="co-dims"></div>
         </details>
 
@@ -317,9 +322,11 @@ export const clinicalOverview = {
     $("#cs-def").addEventListener("click", () => { state.cancers = avail.cancers.slice(); commit(); renderCancers(); });
     $("#cs-all").addEventListener("click", () => { state.selectedCancers = state.cancers.slice(); commit(); renderCancers(); recompute(); });
     $("#cs-none").addEventListener("click", () => { state.selectedCancers = []; commit(); renderCancers(); recompute(); });
+    $("#ds-all").addEventListener("click", () => { state.selectedDims = state.dimensions.slice(); commit(); renderDims(); recompute(); refreshDimPick(); });
+    $("#ds-none").addEventListener("click", () => { state.selectedDims = []; commit(); renderDims(); recompute(); refreshDimPick(); });
     $("#ds-def").addEventListener("click", () => { state.dimensions = avail.dimIds.slice(); commit(); renderDims(); recompute(); });
 
-    genesEl.addEventListener("input", () => { state.genes = [...new Set(genesEl.value.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean))]; commit(); refreshDimPick(); });
+    genesEl.addEventListener("input", () => { state.genes = parseGenes(genesEl.value); setGOIs(state.genes); commit(); refreshDimPick(); });
     modeSel.value = state.mode || "expanded";
     modeSel.addEventListener("change", () => { state.mode = modeSel.value; commit(); refreshDimPick(); });
 
@@ -572,9 +579,10 @@ export const clinicalOverview = {
           const gv = col.idx.map(i => vals[i]);
           const weak = col.idx.length < THR.minPerGroup;
           const cell = cells[0][ci];
-          return { name: col.label, m: mean(gv), sd: sd(gv), state: weak ? "weak" : "ok", stars: cell.stars };
+          const nG = gv.length, sem = nG > 1 ? sd(gv) / Math.sqrt(nG) : 0;
+          return { name: col.label, m: mean(gv), err: sem, color: col.side === "baseline" ? "#cbd5e1" : "#64748b", state: weak ? "weak" : "ok", stars: cell.stars };
         });
-        out.singleBar = multiBarSVG(groups, { caption: `${recs[0].label} expression (mean ± SD)`, ylabel: "TPM" });
+        out.singleBar = multiBarSVG(groups, { caption: `${recs[0].label} expression (mean ± SEM)`, ylabel: "TPM" });
       }
       return out;
     }
@@ -607,6 +615,9 @@ export const clinicalOverview = {
       const blob = new Blob([csv], { type: "text/csv" }); const url = URL.createObjectURL(blob);
       const a = document.createElement("a"); a.href = url; a.download = `clinical_overview_${state.mode}.csv`; a.click(); URL.revokeObjectURL(url);
     }
+
+    // GOIs 與其他分析（Survival）共享：別處改動時同步本頁
+    onGOIsChanged(list => { state.genes = list.slice(); if (document.activeElement !== genesEl) genesEl.value = list.join(", "); commit(); refreshDimPick(); });
 
     // ---------- 初始化 ----------
     syncGenes(); refreshNamed(); renderAll(); refreshDimPick();

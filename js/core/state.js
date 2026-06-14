@@ -77,7 +77,7 @@ export function reconcile(saved, avail) {
     cancers: mergeOrdered(saved && saved.cancers, avail.cancers),
     dimensions: mergeOrdered(saved && saved.dimensions, avail.dimIds),
     selectedCancers: null,   // 由各模組決定預設（見下）
-    selectedDims: (saved && Array.isArray(saved.selectedDims)) ? saved.selectedDims.filter(id => avail.dimIds.includes(id)) : [],
+    selectedDims: (saved && Array.isArray(saved.selectedDims)) ? saved.selectedDims.filter(id => avail.dimIds.includes(id)) : avail.dimIds.slice(),
     ordinalAssign: (saved && saved.ordinalAssign && typeof saved.ordinalAssign === "object") ? saved.ordinalAssign : {},
     numericCutoff: (saved && saved.numericCutoff && typeof saved.numericCutoff === "object") ? saved.numericCutoff : {},
   };
