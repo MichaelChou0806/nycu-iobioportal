@@ -242,3 +242,38 @@ export function coxPH1Stratified(times, events, x, strata) {
   const hr = Math.exp(beta), z = (se && isFinite(se)) ? beta / se : 0, p = (se && isFinite(se)) ? 2 * (1 - normCDF(Math.abs(z))) : 1;
   return { beta, hr, se, ciLow: Math.exp(beta - 1.96 * se), ciHigh: Math.exp(beta + 1.96 * se), p };
 }
+
+// =====================================================================
+// 相關係數：Pearson / Spearman（p 用 Fisher z-transformation，normal 近似）
+// 供 GOI 表現 × 免疫分數相關分析。呼叫前請先濾掉任一為 NaN 的配對。
+// =====================================================================
+
+// 平均 rank（處理 ties，1-based）
+function rankAvg(arr) {
+  const idx = arr.map((_, i) => i).sort((a, b) => arr[a] - arr[b]);
+  const ranks = new Array(arr.length);
+  let i = 0;
+  while (i < idx.length) {
+    let j = i; while (j < idx.length && arr[idx[j]] === arr[idx[i]]) j++;
+    const avg = (i + j - 1) / 2 + 1;
+    for (let k = i; k < j; k++) ranks[idx[k]] = avg;
+    i = j;
+  }
+  return ranks;
+}
+function pearsonCore(x, y) {
+  const n = x.length; let sx = 0, sy = 0;
+  for (let i = 0; i < n; i++) { sx += x[i]; sy += y[i]; }
+  const mx = sx / n, my = sy / n; let num = 0, dx = 0, dy = 0;
+  for (let i = 0; i < n; i++) { const a = x[i] - mx, b = y[i] - my; num += a * b; dx += a * a; dy += b * b; }
+  return (dx > 0 && dy > 0) ? num / Math.sqrt(dx * dy) : 0;
+}
+// Fisher z：r 的雙尾 p（n<4 或 |r|=1 時退化處理）
+function corrP(r, n) {
+  if (n < 4) return 1;
+  if (Math.abs(r) >= 1) return 0;
+  const z = 0.5 * Math.log((1 + r) / (1 - r)), se = 1 / Math.sqrt(n - 3);
+  return 2 * (1 - normCDF(Math.abs(z) / se));
+}
+export function pearsonr(x, y) { const n = x.length; const r = pearsonCore(x, y); return { r, p: corrP(r, n), n }; }
+export function spearmanr(x, y) { const n = x.length; const r = pearsonCore(rankAvg(x), rankAvg(y)); return { r, p: corrP(r, n), n }; }

@@ -72,6 +72,26 @@ export class Dataset {
     this.geneCache.set(rec.gene_id, vals);
     return vals;
   }
+
+  // 載入免疫分數（lazy；只做一次）。對齊 this.samples 軸（與基因值同序）。
+  // 回傳 { cellTypes, methods, get(cellType)->Float64Array, has(cellType) }
+  async loadImmune() {
+    if (this.immune) return this.immune;
+    const manifest = await fetchJson(this.base + "/immune_manifest.json");
+    const txt = await fetchGzipText(this.base + "/immune_scores.csv.gz");
+    const n = this.samples.length;
+    const map = new Map();
+    txt.split("\n").forEach(line => {
+      if (!line) return;
+      const parts = line.split(",");           // cell_type, v1, v2, ... vN（空字串=NaN）
+      const arr = new Float64Array(n);
+      for (let i = 0; i < n; i++) { const v = parts[i + 1]; arr[i] = (v === undefined || v === "") ? NaN : Number(v); }
+      map.set(parts[0], arr);
+    });
+    if (manifest.n_samples !== n) console.warn(`免疫 n_samples ${manifest.n_samples} 與樣本數 ${n} 不符`);
+    this.immune = { cellTypes: manifest.cell_types, methods: manifest.methods, get: ct => map.get(ct), has: ct => map.has(ct) };
+    return this.immune;
+  }
 }
 
 // 依 datasets.json 建立所有 Dataset（先載入第一個，其餘等被選到再載入）
