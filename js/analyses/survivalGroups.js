@@ -38,6 +38,7 @@ function injectStyles() {
     .sg-ctl{font-size:11.5px;color:var(--muted)}
     .sg-ctl input{padding:6px 9px;font-size:13px;margin-left:4px;border:1px solid var(--line);border-radius:6px;width:130px}
     .sg-mini{padding:4px 10px;font-size:12px;border-radius:6px;background:#fff;color:var(--accent);border:1px solid var(--accent);cursor:pointer}
+    .sg-run-big{padding:9px 20px;font-weight:600}
     .sg-sep{width:1px;height:18px;background:var(--line);margin:0 4px}
     .sg-chips{display:flex;flex-wrap:wrap;gap:6px}
     .sg-chip{padding:5px 11px;border:1px solid var(--line);border-radius:20px;background:#fff;font-size:12px;cursor:grab;user-select:none}
@@ -59,6 +60,14 @@ function injectStyles() {
     .sg-result{overflow-x:auto}
     .sg-result svg{max-width:100%;height:auto;background:#fff;border:1px solid var(--line);border-radius:8px;margin-top:10px}
     .sg-legend{font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.5}
+    .sg-divider{height:1px;background:var(--line);margin:22px 0}
+    .sg-sub{font-weight:400;text-transform:none;letter-spacing:0;font-size:11.5px;color:var(--muted)}
+    .sg-scr-intro{font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:10px}
+    .sg-screen-dims{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+    .sg-dim{display:flex;align-items:center;gap:6px;padding:6px 11px;border:1px solid var(--line);border-radius:6px;font-size:12.5px;cursor:pointer;user-select:none}
+    .sg-dim.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .sg-dim input{cursor:pointer;margin:0}
+    .sg-stale{font-size:11.5px;color:#b45309;padding:4px 0}
   `;
   const el = document.createElement("style"); el.textContent = css; document.head.appendChild(el);
 }
@@ -113,7 +122,7 @@ function splitLabel(m) { return m === "tertile" ? "tertile (top/bottom 1/3)" : m
 
 export const survivalGroups = {
   id: "survivalGroups",
-  name: "Survival · Custom Groups",
+  name: "Advanced Survival",
 
   async mount(container, { dataset }) {
     injectStyles();
@@ -137,10 +146,14 @@ export const survivalGroups = {
       view: saved.view === "pooled" ? "pooled" : "percancer",   // 多癌別：percancer | pooled
       scheme: saved.scheme === "rb" ? "rb" : "rg",
       colorMax: saved.colorMax != null ? saved.colorMax : 0,    // 0=auto
+      // ── Subset screening（各臨床亞組各自 A vs B 的 2D heatmap）──
+      selectedScreenDims: Array.isArray(saved.selectedScreenDims) ? saved.selectedScreenDims : [],
+      scrScheme: saved.scrScheme === "rb" ? "rb" : "rg",
+      scrColorMax: saved.scrColorMax != null ? saved.scrColorMax : 0,
     };
     const subsetOptions = `<option value="">No clinical subset (all tumors)</option>` +
       dims.map(d => { const [bl, al] = labelsOf(d, assignmentFor(d)); const nm = d.name || d.id; return `<option value="${d.id}|baseline">${nm}: ${bl}</option><option value="${d.id}|advanced">${nm}: ${al}</option>`; }).join("");
-    let dragCancer = null, lastSVGName = "km_groups", lastKM = null;
+    let dragCancer = null, lastSVGName = "km_groups", lastKM = null, scrLastSVGName = "screening";
 
     container.innerHTML = `
       <div class="card">
@@ -173,13 +186,6 @@ export const survivalGroups = {
         </details>
 
         <div class="sg-sec">
-          <h3 class="sg-h3">Clinical subset (optional)</h3>
-          <div class="sg-toolbar">
-            <label class="sg-ctl">Keep only<select id="sg-subset" style="min-width:240px">${subsetOptions}</select></label>
-          </div>
-        </div>
-
-        <div class="sg-sec">
           <h3 class="sg-h3">Groups</h3>
           <div class="sg-toolbar">
             <label class="sg-ctl">Split<select id="sg-split">
@@ -196,12 +202,15 @@ export const survivalGroups = {
             <button class="sg-mini" id="sg-p-llrest">All-Low vs rest</button>
           </div>
           <div id="sg-grid" class="sg-grid"></div>
+          <div class="sg-note" style="margin-top:8px">Tumor only · endpoint OS. Signature reads genes in the order entered (with 2 genes, HL = Gene 1 High, Gene 2 Low). With 1 gene it's simply High vs Low.</div>
         </div>
 
+        <div class="sg-divider"></div>
+
         <div class="sg-sec">
+          <h3 class="sg-h3">Single comparison <span class="sg-sub">— one KM (or per-cancer HR), optionally within one clinical subset</span></h3>
           <div class="sg-toolbar">
-            <button id="sg-run">Run</button>
-            <span class="sg-sep"></span>
+            <label class="sg-ctl">Clinical subset<select id="sg-subset" style="min-width:220px">${subsetOptions}</select></label>
             <label class="sg-ctl" id="sg-view-wrap">Multi-cancer<select id="sg-view">
               <option value="percancer">Per-cancer (HR heatmap)</option>
               <option value="pooled">Pooled (one KM, stratified)</option>
@@ -210,6 +219,9 @@ export const survivalGroups = {
               <option value="rg">Red–Green</option><option value="rb">Red–Blue</option>
             </select></label>
             <label class="sg-ctl" id="sg-cmax-wrap">Scale max<input type="number" id="sg-cmax" min="0" step="0.1" style="width:64px" placeholder="auto"></label>
+          </div>
+          <div class="sg-toolbar">
+            <button id="sg-run">Run comparison</button>
             <span class="sg-sep"></span>
             <button class="sg-mini" id="sg-prism" style="display:none">Export CSV</button>
             <button class="sg-mini" id="sg-svg" style="display:none">SVG</button>
@@ -218,23 +230,63 @@ export const survivalGroups = {
           <div id="sg-status" class="status"></div>
           <div id="sg-result" class="sg-result"></div>
         </div>
-        <div class="sg-note">Tumor only · endpoint OS. Two groups (A vs B) are compared with log-rank and univariate Cox (HR = A vs B). Signature reads genes in the order entered (e.g. with 2 genes, HL = Gene 1 High, Gene 2 Low). With 1 gene it's simply High vs Low.</div>
+
+        <div class="sg-divider"></div>
+
+        <div class="sg-sec">
+          <h3 class="sg-h3">Subset screening <span class="sg-sub">— scan the A-vs-B effect across clinical subgroups (exploratory)</span></h3>
+          <div class="sg-scr-intro">Pick clinical variables to screen. Each variable's two sides become columns (e.g. N stage → N0 and N+); rows are your selected cancers plus a Pooled row. Each cell is the A-vs-B log2 HR within that subgroup. Exploratory — it suggests where the effect is stronger, but does not by itself test for interaction.</div>
+          <div class="sg-toolbar sg-presets">
+            <span class="sg-presets-label">Variables</span>
+            <button class="sg-mini" id="sg-scr-all">Select all</button>
+            <button class="sg-mini" id="sg-scr-clear">Clear</button>
+          </div>
+          <div id="sg-screen-dims" class="sg-screen-dims"></div>
+          <div class="sg-toolbar">
+            <label class="sg-ctl">Colors<select id="sg-scr-scheme">
+              <option value="rg">Red–Green</option><option value="rb">Red–Blue</option>
+            </select></label>
+            <label class="sg-ctl">Scale max<input type="number" id="sg-scr-cmax" min="0" step="0.1" style="width:64px" placeholder="auto"></label>
+          </div>
+          <div class="sg-toolbar">
+            <button id="sg-run-screen" class="sg-run-big">Run screening</button>
+            <span class="sg-sep"></span>
+            <button class="sg-mini" id="sg-scr-svg" style="display:none">SVG</button>
+            <button class="sg-mini" id="sg-scr-png" style="display:none">PNG</button>
+          </div>
+          <div id="sg-scr-status" class="status"></div>
+          <div id="sg-scr-result" class="sg-result"></div>
+        </div>
       </div>`;
 
     const $ = s => container.querySelector(s);
     const monthsEl = $("#sg-months"), splitSel = $("#sg-split"), subsetSel = $("#sg-subset"), ngenesSel = $("#sg-ngenes"), genesBox = $("#sg-genes"), viewSel = $("#sg-view"), schemeSel = $("#sg-scheme"), cmaxEl = $("#sg-cmax");
     const chipBox = $("#sg-cancers"), gridBox = $("#sg-grid"), statusEl = $("#sg-status"), resultEl = $("#sg-result");
+    const scrSchemeSel = $("#sg-scr-scheme"), scrCmaxEl = $("#sg-scr-cmax"), screenDimsBox = $("#sg-screen-dims"), scrStatusEl = $("#sg-scr-status"), scrResultEl = $("#sg-scr-result");
     function commit() { saveState(state); }
 
     if (state.months > 0) monthsEl.value = state.months;
     splitSel.value = state.split; subsetSel.value = state.subset; ngenesSel.value = state.nGenes;
     viewSel.value = state.view; schemeSel.value = state.scheme; if (state.colorMax > 0) cmaxEl.value = state.colorMax;
-    monthsEl.addEventListener("change", () => { const v = Number(monthsEl.value); state.months = (monthsEl.value === "" || !isFinite(v) || v <= 0) ? 0 : v; commit(); });
-    splitSel.addEventListener("change", () => { state.split = splitSel.value; commit(); });
+    monthsEl.addEventListener("change", () => { const v = Number(monthsEl.value); state.months = (monthsEl.value === "" || !isFinite(v) || v <= 0) ? 0 : v; commit(); markStale(); });
+    splitSel.addEventListener("change", () => { state.split = splitSel.value; commit(); markStale(); });
     subsetSel.addEventListener("change", () => { state.subset = subsetSel.value; commit(); });
     viewSel.addEventListener("change", () => { state.view = viewSel.value; commit(); updateControls(); });
     schemeSel.addEventListener("change", () => { state.scheme = schemeSel.value; commit(); });
     cmaxEl.addEventListener("change", () => { const v = Number(cmaxEl.value); state.colorMax = (cmaxEl.value === "" || !isFinite(v) || v <= 0) ? 0 : v; commit(); });
+    // ── Subset screening 控制項 ──
+    scrSchemeSel.value = state.scrScheme; if (state.scrColorMax > 0) scrCmaxEl.value = state.scrColorMax;
+    scrSchemeSel.addEventListener("change", () => { state.scrScheme = scrSchemeSel.value; commit(); });
+    scrCmaxEl.addEventListener("change", () => { const v = Number(scrCmaxEl.value); state.scrColorMax = (scrCmaxEl.value === "" || !isFinite(v) || v <= 0) ? 0 : v; commit(); });
+    // 共享設定改變 → 兩邊結果都失效（避免新舊並存誤導）
+    function markStale() {
+      if (resultEl.querySelector("svg") || scrResultEl.querySelector("svg")) {
+        resultEl.innerHTML = ""; scrResultEl.innerHTML = "";
+        statusEl.className = "status sg-stale"; statusEl.textContent = "Shared settings changed — re-run.";
+        scrStatusEl.className = "status sg-stale"; scrStatusEl.textContent = "Shared settings changed — re-run.";
+        ["sg-prism", "sg-svg", "sg-png", "sg-scr-svg", "sg-scr-png"].forEach(id => $("#" + id).style.display = "none");
+      }
+    }
 
     // 動態渲染基因輸入框（數量 = state.nGenes）
     function renderGenes() {
@@ -242,7 +294,7 @@ export const survivalGroups = {
       for (let i = 0; i < state.nGenes; i++) {
         const lab = document.createElement("label"); lab.className = "sg-ctl"; lab.textContent = `Gene ${i + 1}`;
         const inp = document.createElement("input"); inp.value = state.genes[i] || ""; inp.placeholder = i === 0 ? "e.g. KDELR1" : i === 1 ? "e.g. KDELR2" : "gene symbol";
-        inp.addEventListener("input", () => { state.genes[i] = inp.value.trim(); commit(); });
+        inp.addEventListener("input", () => { state.genes[i] = inp.value.trim(); commit(); markStale(); });
         lab.appendChild(inp); genesBox.appendChild(lab);
       }
     }
@@ -250,7 +302,7 @@ export const survivalGroups = {
     ngenesSel.addEventListener("change", () => {
       state.nGenes = Number(ngenesSel.value);
       state.genes = state.genes.slice(0, state.nGenes);
-      applyPreset("hhll");        // 內含 renderGrid + commit
+      applyPreset("hhll");        // 內含 renderGrid + commit + markStale
       renderGenes();
     });
 
@@ -264,7 +316,7 @@ export const survivalGroups = {
         chip.addEventListener("click", () => {
           if (state.selectedCancers.includes(code)) state.selectedCancers = state.selectedCancers.filter(c => c !== code);
           else state.selectedCancers.push(code);
-          commit(); renderCancers(); updateControls();
+          commit(); renderCancers(); updateControls(); markStale();
         });
         chip.addEventListener("dragstart", () => { dragCancer = code; chip.classList.add("dragging"); });
         chip.addEventListener("dragend", () => chip.classList.remove("dragging"));
@@ -276,8 +328,8 @@ export const survivalGroups = {
     $("#sg-alpha").addEventListener("click", () => { state.cancers = [...state.cancers].sort(); commit(); renderCancers(); });
     $("#sg-byn").addEventListener("click", () => { state.cancers = [...state.cancers].sort((a, b) => (nTumorOf[b] || 0) - (nTumorOf[a] || 0)); commit(); renderCancers(); });
     $("#sg-def").addEventListener("click", () => { state.cancers = availCancers.slice(); commit(); renderCancers(); });
-    $("#sg-all").addEventListener("click", () => { state.selectedCancers = state.cancers.slice(); commit(); renderCancers(); updateControls(); });
-    $("#sg-none").addEventListener("click", () => { state.selectedCancers = []; commit(); renderCancers(); updateControls(); });
+    $("#sg-all").addEventListener("click", () => { state.selectedCancers = state.cancers.slice(); commit(); renderCancers(); updateControls(); markStale(); });
+    $("#sg-none").addEventListener("click", () => { state.selectedCancers = []; commit(); renderCancers(); updateControls(); markStale(); });
 
     // ---- 分組分配格（N 基因通用，本版渲染 2 基因 = 4 格）----
     function ensureAssignKeys() {                       // 補齊/清掉鍵，讓 assign 對齊目前基因數
@@ -305,7 +357,7 @@ export const survivalGroups = {
       gridBox.querySelectorAll(".sg-seg button").forEach(btn => {
         btn.addEventListener("click", () => {
           const key = btn.parentElement.dataset.key, v = btn.dataset.v;
-          state.assign[key] = v; commit(); renderGrid(counts);
+          state.assign[key] = v; commit(); renderGrid(counts); markStale();
         });
       });
     }
@@ -316,7 +368,7 @@ export const survivalGroups = {
       if (name === "hhll") keys.forEach(k => next[k] = k === allH ? "A" : k === allL ? "B" : "exclude");
       else if (name === "hhrest") keys.forEach(k => next[k] = k === allH ? "A" : "B");
       else if (name === "llrest") keys.forEach(k => next[k] = k === allL ? "A" : "B");
-      state.assign = next; commit(); renderGrid();
+      state.assign = next; commit(); renderGrid(); markStale();
     }
     $("#sg-p-hhll").addEventListener("click", () => applyPreset("hhll"));
     $("#sg-p-hhrest").addEventListener("click", () => applyPreset("hhrest"));
@@ -434,7 +486,7 @@ export const survivalGroups = {
         renderGrid(counts);
         if (!A.length || !B.length) { statusEl.className = "status err"; statusEl.textContent = `One group is empty (A n=${A.length}, B n=${B.length}). Adjust assignment.`; return; }
         lastSVGName = `KM_${recs.map(r => r.label).join("_")}_${cancer}`;
-        renderKM_AB(A, B, null, `${gLabel}\n${cancer}${txt ? " · " + txt : ""}`, xCap);
+        renderKM_AB(A, B, null, `${gLabel}\n${cancer}${state.months > 0 ? ` · ${state.months}-mo OS` : ""}${txt ? " · " + txt : ""}`, xCap);
         lastKM = { A, B }; isKM = true;
         const evA = A.reduce((s, x) => s + x.e, 0), evB = B.reduce((s, x) => s + x.e, 0);
         const discarded = cohort.length - Object.values(counts).reduce((a, b) => a + b, 0);
@@ -469,7 +521,7 @@ export const survivalGroups = {
       });
       if (!A.length || !B.length) { statusEl.className = "status err"; statusEl.textContent = `One group is empty (A n=${A.length}, B n=${B.length}). Adjust assignment.`; return false; }
       lastSVGName = `KM_${recs.map(r => r.label).join("_")}_pooled`;
-      renderKM_AB(A, B, aStrata.concat(bStrata), `${gLabel}\npooled ${cancers.length} cancers (stratified)${subsetTxt ? " · " + subsetTxt : ""}`, xCap);
+      renderKM_AB(A, B, aStrata.concat(bStrata), `${gLabel}\npooled ${cancers.length} cancers (stratified)${state.months > 0 ? ` · ${state.months}-mo OS` : ""}${subsetTxt ? " · " + subsetTxt : ""}`, xCap);
       lastKM = { A, B };
       const evA = A.reduce((s, x) => s + x.e, 0), evB = B.reduce((s, x) => s + x.e, 0);
       const note = document.createElement("div"); note.className = "sg-legend";
@@ -503,13 +555,107 @@ export const survivalGroups = {
       let maxAbs = 0; row.forEach(c => { if (c.state !== "nodata" && isFinite(c.value)) maxAbs = Math.max(maxAbs, Math.abs(c.value)); });
       const colorMax = state.colorMax > 0 ? state.colorMax : Math.min(4, Math.max(0.5, Math.ceil(maxAbs * 10) / 10));
       lastSVGName = "HR_heatmap_groups";
-      resultEl.innerHTML = heatmapSVG([`${groupLabel("A")} vs ${groupLabel("B")}`], cancers, [row], { colorMax, scheme: state.scheme, legendLabel: "log2 HR", caption: `${recs.map(r => r.label).join("·")}${subsetTxt ? "\n" + subsetTxt : ""}` });
+      resultEl.innerHTML = heatmapSVG([`${groupLabel("A")} vs ${groupLabel("B")}`], cancers, [row], { colorMax, scheme: state.scheme, legendLabel: "log2 HR", caption: `${recs.map(r => r.label).join("·")}${state.months > 0 ? ` · ${state.months}-mo OS` : ""}${subsetTxt ? "\n" + subsetTxt : ""}` });
       const note = document.createElement("div"); note.className = "sg-legend";
       note.textContent = `${groupLabel("A")} vs ${groupLabel("B")}${subsetTxt ? ` · subset: ${subsetTxt}` : ""} · ★ log-rank FDR q<0.05 ★★<0.01 ★★★<0.001 ★★★★<0.0001 · red=HR>1 (${groupLabel("A")} worse) ${state.scheme === "rb" ? "blue" : "green"}=HR<1 (${groupLabel("A")} better) · grey=no data, faded=too few`;
       resultEl.appendChild(note);
     }
 
     // ---- 匯出 ----
+    // ── Subset screening：多選臨床維度（仿 Clinical Overview）──
+    function renderScreenDims() {
+      screenDimsBox.innerHTML = "";
+      if (!dims.length) { screenDimsBox.innerHTML = '<span class="sg-note">No clinical variables available for this dataset.</span>'; return; }
+      dims.forEach(d => {
+        const on = state.selectedScreenDims.includes(d.id);
+        const lab = document.createElement("label"); lab.className = "sg-dim" + (on ? " on" : "");
+        const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = on;
+        cb.addEventListener("change", () => {
+          if (cb.checked) { if (!state.selectedScreenDims.includes(d.id)) state.selectedScreenDims.push(d.id); }
+          else state.selectedScreenDims = state.selectedScreenDims.filter(x => x !== d.id);
+          commit(); renderScreenDims();
+          scrResultEl.innerHTML = ""; scrStatusEl.className = "status"; scrStatusEl.textContent = "";   // 改選維度 → 清 screening 結果
+        });
+        lab.appendChild(cb);
+        const sp = document.createElement("span"); sp.textContent = d.name; lab.appendChild(sp);
+        screenDimsBox.appendChild(lab);
+      });
+    }
+
+    // ── Subset screening：行=各選取癌別+Pooled，列=各維度兩側，格=該亞組內 A vs B 的 log2 HR ──
+    function drawScreening(cancers, geneVals, recs) {
+      const cols = [];                                    // 列：選取維度的兩側（兩側都列）
+      state.selectedScreenDims.forEach(dimId => {
+        const dim = dimById[dimId]; if (!dim) return;
+        const asg = assignmentFor(dim); const [bl, al] = labelsOf(dim, asg);
+        cols.push({ label: bl, dim, side: "baseline", asg });
+        cols.push({ label: al, dim, side: "advanced", asg });
+      });
+      const rows = cancers.map(c => ({ label: c, cancers: [c], pooled: false }));   // 行：個別癌別
+      if (cancers.length > 1) rows.push({ label: "Pooled", cancers: cancers.slice(), pooled: true });   // + Pooled（癌別分層）
+      const cells = []; const pflat = [];
+      rows.forEach((r, ri) => {
+        const rowCells = [];
+        cols.forEach((col, ci) => {
+          const A = [], B = [], aStr = [], bStr = [];
+          r.cancers.forEach(c => {
+            const pts = patientsInScope(dataset, [c]).filter(p => classify(col.dim, p.clin[col.dim.field], col.asg) === col.side);
+            const { A: a, B: b } = cohortToAB(buildCohort(pts, geneVals), state.nGenes);
+            a.forEach(x => { A.push(x); aStr.push(c); });
+            b.forEach(x => { B.push(x); bStr.push(c); });
+          });
+          const evA = A.reduce((s, x) => s + x.e, 0), evB = B.reduce((s, x) => s + x.e, 0);
+          let cell;
+          if (!A.length || !B.length) cell = { state: "nodata", tip: `${r.label} / ${col.label}: cannot form both groups (A=${A.length}/B=${B.length})` };
+          else if (evA + evB === 0) cell = { state: "nodata", tip: `${r.label} / ${col.label}: no events` };
+          else {
+            const allTm = A.concat(B).map(x => x.tm), allE = A.concat(B).map(x => x.e), allG = A.map(() => 1).concat(B.map(() => 0));
+            const useStrat = r.pooled && r.cancers.length > 1;                       // Pooled 行 → 癌別分層
+            const cox = useStrat ? coxPH1Stratified(allTm, allE, allG, aStr.concat(bStr)) : coxPH1(allTm, allE, allG);
+            const lr = useStrat ? logRankStratified(allTm, allE, allG, aStr.concat(bStr)) : logRank(allTm, allE, allG);
+            const log2hr = isFinite(cox.hr) && cox.hr > 0 ? Math.log2(cox.hr) : 0;
+            const weak = A.length < 10 || B.length < 10 || (evA + evB) < 10;
+            cell = { value: log2hr, state: weak ? "weak" : "ok", stars: "", tip: `${r.label} / ${col.label}: HR=${cox.hr.toFixed(2)}, n=${A.length}/${B.length}, events=${evA + evB}, p=${lr.p.toPrecision(2)}` };
+            if (!weak) pflat.push({ ri, ci, p: lr.p });
+          }
+          rowCells.push(cell);
+        });
+        cells.push(rowCells);
+      });
+      const q = benjaminiHochberg(pflat.map(x => x.p));                              // FDR 跨所有有效格子
+      pflat.forEach((x, k) => { const cell = cells[x.ri][x.ci]; const st = pStars(q[k]); cell.stars = st === "ns" ? "" : st; cell.tip += `, q=${q[k].toPrecision(2)}`; });
+      let maxAbs = 0; cells.forEach(rc => rc.forEach(c => { if (c.state !== "nodata" && isFinite(c.value)) maxAbs = Math.max(maxAbs, Math.abs(c.value)); }));
+      const colorMax = state.scrColorMax > 0 ? state.scrColorMax : Math.min(4, Math.max(0.5, Math.ceil(maxAbs * 10) / 10));
+      const gLabel = recs.map(r => r.label).join("·");
+      scrLastSVGName = "screening_" + recs.map(r => r.label).join("_");
+      scrResultEl.innerHTML = heatmapSVG(rows.map(r => r.label), cols.map(c => c.label), cells, { colorMax, scheme: state.scrScheme, legendLabel: "log2 HR", caption: `${gLabel}${state.months > 0 ? ` · ${state.months}-mo OS` : ""}\n${groupLabel("A")} vs ${groupLabel("B")} across subgroups` });
+      const note = document.createElement("div"); note.className = "sg-legend";
+      note.textContent = `${groupLabel("A")} vs ${groupLabel("B")} · each cell = log2 HR within that subgroup · Pooled row = cancer-stratified · ★ log-rank FDR q<0.05 ★★<0.01 ★★★<0.001 ★★★★<0.0001 · red=HR>1 (${groupLabel("A")} worse) ${state.scrScheme === "rb" ? "blue" : "green"}=HR<1 · grey=no data, faded=too few · exploratory, not an interaction test`;
+      scrResultEl.appendChild(note);
+      $("#sg-scr-svg").style.display = ""; $("#sg-scr-png").style.display = "";
+    }
+
+    async function runScreening() {
+      scrResultEl.innerHTML = ""; $("#sg-scr-svg").style.display = "none"; $("#sg-scr-png").style.display = "none";
+      const raw = state.genes.slice(0, state.nGenes);
+      if (raw.length < state.nGenes || raw.some(g => !g)) { scrStatusEl.className = "status err"; scrStatusEl.textContent = `Enter ${state.nGenes} gene(s) above.`; return; }
+      const recs = []; const bad = [];
+      raw.forEach(g => { const r = dataset.resolveGene(g); if (r.error || r.multiple) bad.push(g); else recs.push({ rec: r.rec, label: r.rec.symbol || r.rec.gene_id }); });
+      if (bad.length) { scrStatusEl.className = "status err"; scrStatusEl.textContent = "Unrecognized gene(s): " + bad.join(", "); return; }
+      if (!state.selectedCancers.length) { scrStatusEl.className = "status err"; scrStatusEl.textContent = "Select at least one cancer (shared, above)."; return; }
+      if (!state.selectedScreenDims.length) { scrStatusEl.className = "status err"; scrStatusEl.textContent = "Pick at least one clinical variable to screen."; return; }
+      const aKeys = sigKeys(state.nGenes).filter(k => state.assign[k] === "A"), bKeys = sigKeys(state.nGenes).filter(k => state.assign[k] === "B");
+      if (!aKeys.length || !bKeys.length) { scrStatusEl.className = "status err"; scrStatusEl.textContent = "Assign at least one signature to A and one to B (shared, above)."; return; }
+      scrStatusEl.className = "status"; scrStatusEl.textContent = `Fetching ${recs.length} gene(s)…`;
+      let geneVals;
+      try { geneVals = await Promise.all(recs.map(x => dataset.getGeneValues(x.rec))); }
+      catch (e) { scrStatusEl.className = "status err"; scrStatusEl.textContent = "Failed to load gene files: " + e.message; return; }
+      scrStatusEl.textContent = "Screening…";
+      const cancers = state.cancers.filter(c => state.selectedCancers.includes(c));
+      drawScreening(cancers, geneVals, recs);
+      scrStatusEl.className = "status"; scrStatusEl.textContent = "Done.";
+    }
+
     function exportPrism() {
       if (!lastKM) return;
       const rows = [];
@@ -519,21 +665,29 @@ export const survivalGroups = {
       const csv = `Month,${groupLabel("B")},${groupLabel("A")}\n` + rows.map(r => `${r.m.toFixed(3)},${r.low},${r.high}`).join("\n") + "\n";
       dl(new Blob([csv], { type: "text/csv" }), `prism_${lastSVGName}.csv`);
     }
-    function firstSVG() { return resultEl.querySelector("svg"); }
     function dl(blob, name) { const u = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = u; a.download = name; a.click(); URL.revokeObjectURL(u); }
-    function downloadSVG() { const svg = firstSVG(); if (!svg) return; dl(new Blob([new XMLSerializer().serializeToString(svg)], { type: "image/svg+xml;charset=utf-8" }), lastSVGName + ".svg"); }
-    function downloadPNG() {
-      const svg = firstSVG(); if (!svg) return;
+    function svgFile(svg, name) { if (!svg) return; dl(new Blob([new XMLSerializer().serializeToString(svg)], { type: "image/svg+xml;charset=utf-8" }), name + ".svg"); }
+    function pngFile(svg, name) {
+      if (!svg) return;
       const vb = svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal : null;
       const W = vb && vb.width ? vb.width : svg.clientWidth, H = vb && vb.height ? vb.height : svg.clientHeight;
-      const scale = Math.max(2, Math.ceil(2400 / W));
+      const scale = Math.max(2, Math.ceil(2400 / W));                  // 目標寬 ≥2400px → 高解析度輸出
       const xml = new XMLSerializer().serializeToString(svg);
       const img = new Image();
-      img.onload = () => { const c = document.createElement("canvas"); c.width = Math.round(W * scale); c.height = Math.round(H * scale); const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height); c.toBlob(b => dl(b, lastSVGName + ".png"), "image/png"); };
+      img.onload = () => { const c = document.createElement("canvas"); c.width = Math.round(W * scale); c.height = Math.round(H * scale); const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height); c.toBlob(b => dl(b, name + ".png"), "image/png"); };
       img.onerror = () => alert("PNG export failed (try SVG).");
       img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(xml);
     }
+    function downloadSVG() { svgFile(resultEl.querySelector("svg"), lastSVGName); }
+    function downloadPNG() { pngFile(resultEl.querySelector("svg"), lastSVGName); }
+    function downloadScrSVG() { svgFile(scrResultEl.querySelector("svg"), scrLastSVGName); }
+    function downloadScrPNG() { pngFile(scrResultEl.querySelector("svg"), scrLastSVGName); }
     $("#sg-run").addEventListener("click", run);
+    $("#sg-run-screen").addEventListener("click", runScreening);
+    $("#sg-scr-all").addEventListener("click", () => { state.selectedScreenDims = dims.map(d => d.id); commit(); renderScreenDims(); scrResultEl.innerHTML = ""; scrStatusEl.className = "status"; scrStatusEl.textContent = ""; });
+    $("#sg-scr-clear").addEventListener("click", () => { state.selectedScreenDims = []; commit(); renderScreenDims(); scrResultEl.innerHTML = ""; scrStatusEl.className = "status"; scrStatusEl.textContent = ""; });
+    $("#sg-scr-svg").addEventListener("click", downloadScrSVG);
+    $("#sg-scr-png").addEventListener("click", downloadScrPNG);
     $("#sg-prism").addEventListener("click", exportPrism);
     $("#sg-svg").addEventListener("click", downloadSVG);
     $("#sg-png").addEventListener("click", downloadPNG);
@@ -542,5 +696,6 @@ export const survivalGroups = {
     renderCancers();
     renderGrid();
     updateControls();
+    renderScreenDims();
   },
 };
