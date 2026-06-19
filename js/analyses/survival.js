@@ -123,7 +123,7 @@ export const survival = {
             <label class="sv-ctl" id="sv-scheme-wrap">Colors
               <select id="sv-scheme">
                 <option value="rg">Red–Green</option>
-                <option value="rb">Red–Blue (CB-friendly)</option>
+                <option value="rb">Red–Blue</option>
               </select></label>
             <label class="sv-ctl" id="sv-cmax-wrap">Scale max<input type="number" id="sv-cmax" min="0" step="0.1" style="width:64px" placeholder="auto"></label>
             <button id="sv-run">Run</button>
@@ -145,10 +145,20 @@ export const survival = {
     // GOIs 共享
     genesEl.value = getGOIs().join(", ");
     genesEl.addEventListener("input", () => setGOIs(parseGenes(genesEl.value)));
-    const off = onGOIsChanged(list => { if (document.activeElement !== genesEl) genesEl.value = list.join(", "); });
+    const off = onGOIsChanged(list => { if (document.activeElement !== genesEl) genesEl.value = list.join(", "); updateControls(); });
     // 控制項初值
     splitSel.value = state.split; if (state.months > 0) monthsEl.value = state.months;
     viewSel.value = state.view; schemeSel.value = state.scheme; if (state.colorMax > 0) cmaxEl.value = state.colorMax;
+
+    // 控制項可見性：配色與 scale max 只在會出 HR heatmap 時顯示（單條 KM、pooled KM 都不該有）
+    function show(sel, on) { const el = $(sel); if (el) el.style.display = on ? "" : "none"; }
+    function updateControls() {
+      const nG = getGOIs().length, nC = state.selectedCancers.length;
+      const isHeatmap = nG > 1 || (nG === 1 && nC > 1 && state.view === "percancer");  // 多基因 或 單基因多癌別 per-cancer
+      show("#sv-view-wrap", nG === 1 && nC > 1);   // 只有單基因多癌別才需選 per-cancer / pooled
+      show("#sv-scheme-wrap", isHeatmap);
+      show("#sv-cmax-wrap", isHeatmap);
+    }
 
     function renderCancers() {
       chipBox.innerHTML = "";
@@ -159,7 +169,7 @@ export const survival = {
         chip.addEventListener("click", () => {
           if (state.selectedCancers.includes(code)) { state.selectedCancers = state.selectedCancers.filter(c => c !== code); chip.classList.remove("on"); }
           else { state.selectedCancers.push(code); chip.classList.add("on"); }
-          commit();
+          commit(); updateControls();
         });
         chip.addEventListener("dragstart", () => { dragCancer = code; chip.classList.add("dragging"); });
         chip.addEventListener("dragend", () => chip.classList.remove("dragging"));
@@ -171,11 +181,11 @@ export const survival = {
     $("#sv-alpha").addEventListener("click", () => { state.cancers = [...state.cancers].sort(); commit(); renderCancers(); });
     $("#sv-byn").addEventListener("click", () => { state.cancers = [...state.cancers].sort((a, b) => (nTumorOf[b] || 0) - (nTumorOf[a] || 0)); commit(); renderCancers(); });
     $("#sv-def").addEventListener("click", () => { state.cancers = availCancers.slice(); commit(); renderCancers(); });
-    $("#sv-all").addEventListener("click", () => { state.selectedCancers = state.cancers.slice(); commit(); renderCancers(); });
-    $("#sv-none").addEventListener("click", () => { state.selectedCancers = []; commit(); renderCancers(); });
+    $("#sv-all").addEventListener("click", () => { state.selectedCancers = state.cancers.slice(); commit(); renderCancers(); updateControls(); });
+    $("#sv-none").addEventListener("click", () => { state.selectedCancers = []; commit(); renderCancers(); updateControls(); });
     splitSel.addEventListener("change", () => { state.split = splitSel.value; commit(); });
     monthsEl.addEventListener("change", () => { const v = Number(monthsEl.value); state.months = (monthsEl.value === "" || !isFinite(v) || v <= 0) ? 0 : v; commit(); });
-    viewSel.addEventListener("change", () => { state.view = viewSel.value; commit(); });
+    viewSel.addEventListener("change", () => { state.view = viewSel.value; commit(); updateControls(); });
     schemeSel.addEventListener("change", () => { state.scheme = schemeSel.value; commit(); });
     cmaxEl.addEventListener("change", () => { const v = Number(cmaxEl.value); state.colorMax = (cmaxEl.value === "" || !isFinite(v) || v <= 0) ? 0 : v; commit(); });
 
@@ -343,5 +353,6 @@ export const survival = {
     }
 
     renderCancers();
+    updateControls();
   },
 };

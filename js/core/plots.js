@@ -179,13 +179,14 @@ export function multiBarSVG(groups, opts) {
 // opts={pText, hrText, xLabel, caption, xMax}
 // =====================================================================
 export function kmCurveSVG(curves, opts) {
-  const L = 58, T = 36, R = 16, B = 80, plotW = 480, plotH = 300;
+  const captionLines = opts.caption ? String(opts.caption).split("\n").flatMap(seg => wrapText(seg, 60)) : [];
+  const L = 58, T = Math.max(36, 14 + captionLines.length * 16), R = 16, B = 80, plotW = 480, plotH = 300;
   const W = L + plotW + R, H = T + plotH + B;
   const xMax = opts.xMax || Math.max(1, ...curves.map(c => c.km.length ? c.km[c.km.length - 1].t : 1));
   const xS = t => L + (t / xMax) * plotW;
   const yS = sv => T + plotH - sv * plotH;
   let s = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:auto" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">`;
-  if (opts.caption) s += `<text x="${L + plotW / 2}" y="18" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2733">${opts.caption}</text>`;
+  captionLines.forEach((ln, i) => s += `<text x="${L + plotW / 2}" y="${14 + i * 16}" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2733">${ln}</text>`);
   for (let k = 0; k <= 4; k++) { const sv = k / 4, y = yS(sv); s += `<line x1="${L}" y1="${y}" x2="${L + plotW}" y2="${y}" stroke="#eef1f4"/><text x="${L - 6}" y="${y + 4}" text-anchor="end" font-size="10" fill="#6b7480">${sv.toFixed(2)}</text>`; }
   for (let k = 0; k <= 5; k++) { const t = xMax * k / 5, x = xS(t); s += `<line x1="${x}" y1="${T + plotH}" x2="${x}" y2="${T + plotH + 4}" stroke="#c9ced6"/><text x="${x}" y="${T + plotH + 16}" text-anchor="middle" font-size="10" fill="#6b7480">${Math.round(t)}</text>`; }
   s += `<line x1="${L}" y1="${T}" x2="${L}" y2="${T + plotH}" stroke="#c9ced6"/><line x1="${L}" y1="${T + plotH}" x2="${L + plotW}" y2="${T + plotH}" stroke="#c9ced6"/>`;
