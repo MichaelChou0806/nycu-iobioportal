@@ -317,3 +317,83 @@ export function corrBarSVG(items, opts) {
   s += `</svg>`;
   return s;
 }
+
+// =====================================================================
+// Forest plot（橫向）：每列一個因子的 HR + 95% CI，HR 軸用 log scale，HR=1 為參考線。
+// 給 univariate / multivariate Cox 用。三態：ok / weak（淡，人數不足）/ nodata（n/a）。
+// items=[{label, hr, ciLow, ciHigh, p, stars, n, events, state, tip}]
+// opts={caption, scheme}（scheme rg→負向綠、否則藍）。state 不寫警告字，只用淡化表達（遵守最終圖乾淨）。
+// =====================================================================
+export function forestSVG(items, opts = {}) {
+  const rowH = 24, padL = 14, plotW = 250, gapPT = 22, axisH = 40;
+  const maxLabelLen = Math.max(8, ...items.map(it => String(it.label).length));
+  const Llab = Math.min(380, Math.max(120, Math.ceil(maxLabelLen * 6.6) + 10));
+  // 右側文字欄（HR (95% CI) + p）寬度依內容
+  const txtOf = it => it.state === "nodata" ? "n/a"
+    : `${fmtHR(it.hr)} (${fmtHR(it.ciLow)}–${fmtHR(it.ciHigh)})  ${it.pText || ""}`;
+  const maxTxtLen = Math.max(16, "HR (95% CI)        p".length, ...items.map(it => txtOf(it).length + 3));
+  const Rtext = Math.ceil(maxTxtLen * 6.0) + 12;
+  const plotLeft = padL + Llab + 12;
+  const textLeft = plotLeft + plotW + gapPT;
+  const W = textLeft + Rtext + 14;
+
+  // log2 HR 軸範圍：涵蓋所有 CI，保證含 HR=1，clamp 到 1/64..64
+  const fin = [];
+  items.forEach(it => { if (it.state !== "nodata") [it.hr, it.ciLow, it.ciHigh].forEach(v => { if (isFinite(v) && v > 0) fin.push(Math.log2(v)); }); });
+  let lo = fin.length ? Math.min(...fin) : -1, hi = fin.length ? Math.max(...fin) : 1;
+  lo = Math.max(-6, Math.min(Math.floor(lo), -1)); hi = Math.min(6, Math.max(Math.ceil(hi), 1));
+  const loVal = Math.pow(2, lo), hiVal = Math.pow(2, hi);
+  const xPos = hr => plotLeft + (Math.log2(Math.min(hiVal, Math.max(loVal, hr))) - lo) / (hi - lo) * plotW;
+  // tick：整數次方，太多則間隔 2
+  const ticks = []; const step = (hi - lo) > 8 ? 2 : 1;
+  for (let k = lo; k <= hi; k += step) ticks.push(k);
+  if (ticks[ticks.length - 1] !== hi) ticks.push(hi);
+
+  const _mc = Math.max(12, Math.floor((W - 16) / 7.2));
+  const titleLines = opts.caption ? String(opts.caption).split("\n").flatMap(seg => wrapText(seg, _mc)) : [];
+  const titleH = titleLines.length * 16;
+  const headerY = 8 + titleH + 14;
+  const rowsTop = headerY + 8;
+  const rowsBottom = rowsTop + items.length * rowH;
+  const H = rowsBottom + axisH;
+  const neg = opts.scheme === "rg" ? "#22c55e" : "#3b82f6";
+
+  let s = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:auto" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">`;
+  titleLines.forEach((ln, i) => s += `<text x="${W / 2}" y="${20 + i * 16}" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2733">${ln}</text>`);
+  // 欄抬頭
+  s += `<text x="${padL}" y="${headerY}" font-size="10.5" fill="#6b7480" font-weight="600">Factor</text>`;
+  s += `<text x="${textLeft}" y="${headerY}" font-size="10.5" fill="#6b7480" font-weight="600">HR (95% CI)</text>`;
+  // 縱向 gridline + tick（含 HR=1 參考線）
+  ticks.forEach(k => {
+    const x = xPos(Math.pow(2, k)), isOne = k === 0;
+    s += `<line x1="${x}" y1="${rowsTop - 2}" x2="${x}" y2="${rowsBottom}" stroke="${isOne ? '#9aa3af' : '#eef1f4'}" stroke-width="${isOne ? 1.2 : 1}"${isOne ? '' : ' stroke-dasharray="2 2"'}/>`;
+    const v = Math.pow(2, k);
+    s += `<text x="${x}" y="${rowsBottom + 14}" text-anchor="middle" font-size="10" fill="#6b7480">${v >= 1 ? v : v.toFixed(v < 0.125 ? 3 : v < 1 ? (v === 0.5 ? 1 : v === 0.25 ? 2 : 3) : 0)}</text>`;
+  });
+  s += `<text x="${plotLeft + plotW / 2}" y="${rowsBottom + 32}" text-anchor="middle" font-size="11" fill="#6b7480">Hazard ratio (log scale)</text>`;
+
+  items.forEach((it, i) => {
+    const cy = rowsTop + i * rowH + rowH / 2;
+    const faded = it.state === "weak";
+    const op = faded ? 0.45 : 1;
+    s += `<text x="${padL}" y="${cy + 4}" font-size="11.5" fill="${faded ? '#9aa3af' : '#1f2733'}">${it.label}</text>`;
+    if (it.state === "nodata") {
+      s += `<text x="${plotLeft + plotW / 2}" y="${cy + 4}" text-anchor="middle" font-size="10" fill="#c0c6cd">—</text>`;
+      s += `<text x="${textLeft}" y="${cy + 4}" font-size="11" fill="#9aa3af">n/a</text>`;
+      return;
+    }
+    const xL = xPos(it.ciLow), xH = xPos(it.ciHigh), xC = xPos(it.hr);
+    const color = it.hr >= 1 ? "#ef4444" : neg;
+    s += `<line x1="${xL}" y1="${cy}" x2="${xH}" y2="${cy}" stroke="#475569" stroke-width="1.3" stroke-opacity="${op}"/>`;
+    s += `<line x1="${xL}" y1="${cy - 3}" x2="${xL}" y2="${cy + 3}" stroke="#475569" stroke-width="1.3" stroke-opacity="${op}"/>`;
+    s += `<line x1="${xH}" y1="${cy - 3}" x2="${xH}" y2="${cy + 3}" stroke="#475569" stroke-width="1.3" stroke-opacity="${op}"/>`;
+    s += `<rect x="${xC - 4}" y="${cy - 4}" width="8" height="8" fill="${color}" fill-opacity="${op}"><title>${it.tip || ""}</title></rect>`;
+    const txt = `${fmtHR(it.hr)} (${fmtHR(it.ciLow)}–${fmtHR(it.ciHigh)})`;
+    s += `<text x="${textLeft}" y="${cy + 4}" font-size="11" fill="${faded ? '#9aa3af' : '#1f2733'}">${txt}</text>`;
+    if (it.pText) s += `<text x="${W - 14}" y="${cy + 4}" text-anchor="end" font-size="11" fill="${faded ? '#9aa3af' : '#1f2733'}">${it.pText}${it.stars ? " " + it.stars : ""}</text>`;
+  });
+  s += `</svg>`;
+  return s;
+}
+// HR 數值格式：大值少小數、極小值科學記號
+function fmtHR(v) { if (!isFinite(v)) return "n/a"; const a = Math.abs(v); return a >= 100 ? v.toFixed(0) : a >= 10 ? v.toFixed(1) : a >= 0.1 ? v.toFixed(2) : a >= 0.01 ? v.toFixed(3) : v.toExponential(1); }

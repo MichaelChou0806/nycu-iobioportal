@@ -1,0 +1,396 @@
+// =====================================================================
+// analyses/coxRegression.js —「Cox Regression」（univariate；OS）
+// ---------------------------------------------------------------------
+// 對單一癌種，逐因子做 univariate Cox（每因子一個 HR），畫成 forest plot。
+//   - 基因（與其他分析共用 GOIs）：High vs Low（median/tertile/quartile）
+//   - 臨床因子（dimensions.tcga.json）：advanced vs baseline（無資料自動灰掉）
+//   - vital 排除：它就是 OS 事件本身（用它預測死亡 = 完全分離）
+// FDR 星號跨因子校正。HR=advanced/High 相對 baseline/Low（沿用 A=1,B=0 編碼）。
+// 統計核心見 stats.js（coxPH1 已驗證）。狀態自存；GOIs 走共享。
+// 之後會在同檔加 multivariate（用 stats.js 的 coxPH 多共變量引擎）。
+// =====================================================================
+
+import { patientsInScope, loadDimensions, analyzeDimension, classify } from "../core/dimensions.js";
+import { coxPH1, coxPH, benjaminiHochberg, pStars } from "../core/stats.js";
+import { forestSVG } from "../core/plots.js";
+import { getGOIs, setGOIs, onGOIsChanged, parseGenes } from "../core/gois.js";
+
+const DAYS_PER_MONTH = 30.4375;
+
+// 存活 endpoint。實際顯示哪些由 clinical 有無對應欄位決定（資料驅動，OSCC 自動沿用）。
+const ENDPOINTS = [
+  { id: "OS", event: "OS", time: "OS.time", label: "OS" },
+  { id: "DSS", event: "DSS", time: "DSS.time", label: "DSS" },
+  { id: "DFI", event: "DFI", time: "DFI.time", label: "DFI" },
+  { id: "PFI", event: "PFI", time: "PFI.time", label: "PFI" },
+];
+
+let stylesInjected = false;
+function injectStyles() {
+  if (stylesInjected) return; stylesInjected = true;
+  const css = `
+    .cx-sec{margin-bottom:18px}
+    .cx-h3{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 8px}
+    .cx-genes{width:100%;min-height:52px;padding:9px 11px;border:1px solid var(--line);border-radius:7px;font:13px/1.5 monospace;resize:vertical}
+    .cx-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;align-items:center}
+    .cx-mini{padding:4px 10px;font-size:12px;border-radius:6px;background:#fff;color:var(--accent);border:1px solid var(--accent);cursor:pointer}
+    .cx-sep{width:1px;height:18px;background:var(--line);margin:0 4px}
+    .cx-ctl{font-size:11.5px;color:var(--muted)}
+    .cx-ctl select,.cx-ctl input{padding:5px 8px;font-size:12px;margin-left:4px}
+    .cx-dims{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
+    .cx-dim{display:flex;align-items:center;gap:8px;padding:7px 11px;border:1px solid var(--line);border-radius:6px;font-size:12.5px;cursor:pointer;user-select:none;min-width:0}
+    .cx-dim.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .cx-dim.off{opacity:.45;cursor:not-allowed}
+    .cx-dim.warn{border-color:#f0c089}
+    .cx-dim.on small{color:#dbeafe}
+    .cx-dag{color:#b45309;font-weight:700;font-size:11px;margin-left:2px}
+    .cx-dim input{appearance:auto;width:15px;height:15px;min-width:0;padding:0;border:0;margin:0;cursor:pointer;flex:none}
+    .cx-dim-name{flex:none;font-weight:500}
+    .cx-dim small{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75;font-size:10.5px}
+    .cx-note{font-size:11.5px;color:var(--muted);line-height:1.5}
+    .cx-result{overflow-x:auto}
+    .cx-result svg{max-width:100%;height:auto;background:#fff;border:1px solid var(--line);border-radius:8px;margin-top:10px}
+    .cx-legend{font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.5}
+  `;
+  const el = document.createElement("style"); el.textContent = css; document.head.appendChild(el);
+}
+
+const LS = "tcga-tool:cox";
+function loadState() { try { return JSON.parse(localStorage.getItem(LS)) || {}; } catch (e) { return {}; } }
+function saveState(st) { try { localStorage.setItem(LS, JSON.stringify(st)); } catch (e) {} }
+
+function quantileSorted(sorted, f) { const p = f * (sorted.length - 1), lo = Math.floor(p), hi = Math.ceil(p); return sorted[lo] + (sorted[hi] - sorted[lo]) * (p - lo); }
+// 切法分組：1=High, 0=Low, -1=丟棄（與 survival.js 同邏輯）
+function splitGroups(vals, method) {
+  const sorted = [...vals].sort((a, b) => a - b);
+  const frac = method === "tertile" ? 1 / 3 : method === "quartile" ? 1 / 4 : 0.5;
+  const lowCut = quantileSorted(sorted, frac), highCut = quantileSorted(sorted, 1 - frac);
+  return vals.map(v => method === "median" ? (v > highCut ? 1 : 0) : (v <= lowCut ? 0 : (v > highCut ? 1 : -1)));
+}
+// 維度的 baseline / advanced 顯示標籤
+function labelsOf(dim) {
+  if (dim.type === "binary") {
+    if (dim.numericSplit) return [dim.numericSplit.baselineLabel, dim.numericSplit.advancedLabel];
+    return [dim.baseline.label, dim.advanced.label];
+  }
+  const base = dim.levels.filter(l => l.default === "baseline").map(l => l.id);
+  const adv = dim.levels.filter(l => l.default === "advanced").map(l => l.id);
+  return [base.join("/"), adv.join("/")];
+}
+function fmtP(p) { return p < 1e-4 ? "p<0.0001" : "p=" + (p < 0.001 ? p.toExponential(1) : p.toFixed(3)); }
+
+export const coxRegression = {
+  id: "coxRegression",
+  name: "Cox Regression",
+
+  async mount(container, { dataset }) {
+    injectStyles();
+    const availCancers = dataset.cancers.map(c => c.code);
+    const nTumorOf = Object.fromEntries(dataset.cancers.map(c => [c.code, c.n_tumor]));
+
+    const dimUrl = (dataset.config && dataset.config.dimensionsUrl) || "config/dimensions.tcga.json";
+    let DEF;
+    try { DEF = await loadDimensions(dimUrl); }
+    catch (e) { container.innerHTML = `<div class="card"><div class="status err">Failed to load clinical dimensions: ${e.message}</div></div>`; return; }
+    // vital 排除（= 存活事件本身，當共變量會完全分離）。
+    // recurrence 不硬排除：post-baseline，預設不選但可手動勾並標示。
+    const DISCOURAGED = { recurrence: "post-baseline event" };
+    const dims = (DEF.dimensions || []).filter(d => d.id !== "vital");
+
+    // 可用 endpoint：clinical 同時有 event 與 time 欄位才列入（資料驅動）
+    const clinFields = new Set(dataset.clinicalFields || (dataset.clinical.size ? Object.keys(dataset.clinical.values().next().value) : []));
+    const endpoints = ENDPOINTS.filter(ep => clinFields.has(ep.event) && clinFields.has(ep.time));
+    if (!endpoints.length) endpoints.push(ENDPOINTS[0]);   // 退路：至少有 OS
+
+    const saved = loadState();
+    let state = {
+      endpoint: endpoints.some(ep => ep.id === saved.endpoint) ? saved.endpoint : endpoints[0].id,
+      cancer: availCancers.includes(saved.cancer) ? saved.cancer : (availCancers.includes("HNSC") ? "HNSC" : availCancers[0]),
+      selectedDims: Array.isArray(saved.selectedDims) ? saved.selectedDims.filter(id => dims.some(d => d.id === id)) : dims.filter(d => !DISCOURAGED[d.id]).map(d => d.id),
+      split: ["median", "tertile", "quartile"].includes(saved.split) ? saved.split : "median",
+      months: saved.months != null ? saved.months : 0,
+      model: saved.model === "multi" ? "multi" : "uni",
+    };
+    const currentEndpoint = () => endpoints.find(ep => ep.id === state.endpoint) || endpoints[0];
+    let lastSVGName = "cox_forest", lastItems = null, lastCancer = "", lastEndpoint = "OS", lastModel = "uni";
+
+    const cancerOpts = availCancers.map(c => `<option value="${c}">${c} (tumor ${nTumorOf[c]})</option>`).join("");
+
+    container.innerHTML = `
+      <div class="card">
+        <div class="cx-sec">
+          <h3 class="cx-h3">Genes (shared with Clinical Overview)</h3>
+          <textarea id="cx-genes" class="cx-genes"></textarea>
+        </div>
+
+        <div class="cx-sec">
+          <div class="cx-toolbar">
+            <label class="cx-ctl">Model<select id="cx-model">
+              <option value="uni">Univariate (per factor)</option>
+              <option value="multi">Multivariate (adjusted)</option>
+            </select></label>
+            <label class="cx-ctl">Endpoint<select id="cx-endpoint">${endpoints.map(ep => `<option value="${ep.id}">${ep.label}</option>`).join("")}</select></label>
+            <label class="cx-ctl">Cancer<select id="cx-cancer" style="min-width:170px">${cancerOpts}</select></label>
+            <label class="cx-ctl">Gene split<select id="cx-split">
+              <option value="median">Median (High/Low)</option>
+              <option value="tertile">Tertile (top/bottom 1/3)</option>
+              <option value="quartile">Quartile (Q4 vs Q1)</option>
+            </select></label>
+            <label class="cx-ctl">Months<input type="number" id="cx-months" min="0" step="1" style="width:72px" placeholder="all"></label>
+          </div>
+        </div>
+
+        <div class="cx-sec">
+          <div class="cx-toolbar">
+            <h3 class="cx-h3" style="margin:0">Clinical factors</h3>
+            <span class="cx-sep"></span>
+            <button class="cx-mini" id="cx-all">Select all</button>
+            <button class="cx-mini" id="cx-clear">Clear</button>
+          </div>
+          <div id="cx-dims" class="cx-dims"></div>
+        </div>
+
+        <div class="cx-sec">
+          <div class="cx-toolbar">
+            <button id="cx-run">Run</button>
+            <span class="cx-sep"></span>
+            <button class="cx-mini" id="cx-csv" style="display:none">Export CSV</button>
+            <button class="cx-mini" id="cx-svg" style="display:none">SVG</button>
+            <button class="cx-mini" id="cx-png" style="display:none">PNG</button>
+          </div>
+          <div id="cx-status" class="status"></div>
+          <div id="cx-result" class="cx-result"></div>
+        </div>
+        <div class="cx-note">Tumor only · survival endpoint selectable above. Genes are High vs Low; clinical factors are advanced vs baseline level. <span style="color:#b45309;font-weight:700">†</span> marks post-baseline factors (e.g. recurrence): off by default because they can distort baseline prognosis — enable only deliberately. Vital status is excluded (it is the survival event).</div>
+      </div>`;
+
+    const $ = s => container.querySelector(s);
+    const genesEl = $("#cx-genes"), cancerSel = $("#cx-cancer"), splitSel = $("#cx-split"), monthsEl = $("#cx-months"), endpointSel = $("#cx-endpoint"), modelSel = $("#cx-model");
+    const dimsBox = $("#cx-dims"), statusEl = $("#cx-status"), resultEl = $("#cx-result");
+
+    function commit() { saveState(state); }
+    // GOIs 共享
+    genesEl.value = getGOIs().join(", ");
+    genesEl.addEventListener("input", () => setGOIs(parseGenes(genesEl.value)));
+    const off = onGOIsChanged(list => { if (document.activeElement !== genesEl) genesEl.value = list.join(", "); });
+    // 控制項初值
+    modelSel.value = state.model; endpointSel.value = state.endpoint; cancerSel.value = state.cancer; splitSel.value = state.split; if (state.months > 0) monthsEl.value = state.months;
+
+    // 依目前癌種計算每個維度的可用性（base/adv 人數），無資料就灰掉並取消勾選
+    function renderDims() {
+      const patients = patientsInScope(dataset, [state.cancer]);
+      dimsBox.innerHTML = "";
+      dims.forEach(d => {
+        const r = analyzeDimension(d, patients, undefined);   // 用各級別預設指派
+        const avail = r.base > 0 && r.adv > 0;
+        if (!avail) state.selectedDims = state.selectedDims.filter(id => id !== d.id);
+        const on = state.selectedDims.includes(d.id);
+        const [bl, al] = labelsOf(d);
+        const dis = DISCOURAGED[d.id];
+        const chip = document.createElement("label");
+        chip.className = "cx-dim" + (avail ? (on ? " on" : "") : " off") + (dis ? " warn" : "");
+        chip.title = avail ? `${d.name}: ${al} vs ${bl} (n ${r.adv}/${r.base})${dis ? ` — † not recommended (${dis})` : ""}` : `${d.name}: no data in ${state.cancer}`;
+        chip.innerHTML = `<input type="checkbox" ${on ? "checked" : ""} ${avail ? "" : "disabled"}><span class="cx-dim-name">${d.name}${dis ? `<sup class="cx-dag">†</sup>` : ""}</span><small>${avail ? `${al}/${bl} ${r.adv}/${r.base}` : "no data"}</small>`;
+        if (avail) chip.querySelector("input").addEventListener("change", e => {
+          if (e.target.checked) { if (!state.selectedDims.includes(d.id)) state.selectedDims.push(d.id); chip.classList.add("on"); }
+          else { state.selectedDims = state.selectedDims.filter(id => id !== d.id); chip.classList.remove("on"); }
+          commit();
+        });
+        dimsBox.appendChild(chip);
+      });
+      commit();
+    }
+
+    modelSel.addEventListener("change", () => { state.model = modelSel.value; commit(); });
+    endpointSel.addEventListener("change", () => { state.endpoint = endpointSel.value; commit(); });
+    cancerSel.addEventListener("change", () => { state.cancer = cancerSel.value; commit(); renderDims(); });
+    splitSel.addEventListener("change", () => { state.split = splitSel.value; commit(); });
+    monthsEl.addEventListener("change", () => { const v = Number(monthsEl.value); state.months = (monthsEl.value === "" || !isFinite(v) || v <= 0) ? 0 : v; commit(); });
+    $("#cx-all").addEventListener("click", () => { const ps = patientsInScope(dataset, [state.cancer]); state.selectedDims = dims.filter(d => { if (DISCOURAGED[d.id]) return false; const r = analyzeDimension(d, ps, undefined); return r.base > 0 && r.adv > 0; }).map(d => d.id); commit(); renderDims(); });
+    $("#cx-clear").addEventListener("click", () => { state.selectedDims = []; commit(); renderDims(); });
+
+    $("#cx-run").addEventListener("click", run);
+    $("#cx-csv").addEventListener("click", exportCSV);
+    $("#cx-svg").addEventListener("click", downloadSVG);
+    $("#cx-png").addEventListener("click", downloadPNG);
+
+    // 取一病人的存活（套月數截斷）：回 {tm,e} 或 null
+    function survOf(clin) {
+      const ep = currentEndpoint();
+      const os = Number(clin[ep.event]), t = Number(clin[ep.time]);
+      if (!isFinite(os) || !isFinite(t) || t < 0) return null;
+      const cut = state.months > 0 ? state.months : Infinity;
+      let tm = t / DAYS_PER_MONTH, e = os ? 1 : 0;
+      if (tm > cut) { e = 0; tm = cut; }
+      return { tm, e };
+    }
+    // 由 (x 0/1, surv) 列表算一列 Cox 結果
+    function fitRow(label, rows, tipHead) {
+      const n1 = rows.filter(r => r.x === 1).length, n0 = rows.filter(r => r.x === 0).length;
+      if (n1 === 0 || n0 === 0) return { label, state: "nodata", tip: `${tipHead}: one group empty (${n1}/${n0})` };
+      const tm = rows.map(r => r.surv.tm), e = rows.map(r => r.surv.e), x = rows.map(r => r.x);
+      const events = e.reduce((s, v) => s + v, 0);
+      const cox = coxPH1(tm, e, x);
+      if (!isFinite(cox.hr) || cox.hr <= 0) return { label, state: "nodata", tip: `${tipHead}: HR not estimable (n=${n1}/${n0}, events=${events})` };
+      const weak = n1 < 10 || n0 < 10 || events < 10;
+      return {
+        label, hr: cox.hr, ciLow: cox.ciLow, ciHigh: cox.ciHigh, p: cox.p,
+        n: n1 + n0, n1, n0, events, state: weak ? "weak" : "ok",
+        tip: `${tipHead}: HR=${cox.hr.toFixed(2)} (${cox.ciLow.toFixed(2)}–${cox.ciHigh.toFixed(2)}), n=${n1}/${n0}, events=${events}, p=${cox.p.toPrecision(2)}`,
+      };
+    }
+
+    async function run() {
+      resultEl.innerHTML = ""; lastItems = null;
+      ["cx-csv", "cx-svg", "cx-png"].forEach(id => $("#" + id).style.display = "none");
+      const cancer = state.cancer;
+      const patients = patientsInScope(dataset, [cancer]);
+      // 基因：解析 GOIs
+      const recs = [], unknown = [];
+      getGOIs().forEach(g => { const r = dataset.resolveGene(g); if (r.error || r.multiple) unknown.push(g); else recs.push({ rec: r.rec, label: r.rec.symbol || r.rec.gene_id }); });
+      const selDims = dims.filter(d => state.selectedDims.includes(d.id));
+      if (!recs.length && !selDims.length) { statusEl.className = "status err"; statusEl.textContent = "Add at least one recognized gene or select a clinical factor."; return; }
+
+      statusEl.className = "status"; statusEl.textContent = recs.length ? `Fetching ${recs.length} gene(s)…` : "Computing…";
+      let geneVals = new Map();
+      try { await Promise.all(recs.map(async x => geneVals.set(x.rec.gene_id, await dataset.getGeneValues(x.rec)))); }
+      catch (e) { statusEl.className = "status err"; statusEl.textContent = "Failed to load gene files (CORS?): " + e.message; return; }
+
+      statusEl.textContent = "Computing…";
+      const epLabel = currentEndpoint().label;
+      lastCancer = cancer; lastEndpoint = currentEndpoint().id; lastModel = state.model;
+      lastSVGName = `cox_${state.model === "multi" ? "multi" : "uni"}_${cancer}_${lastEndpoint}`;
+      if (state.model === "multi") renderMultivariate(recs, selDims, geneVals, patients, epLabel, unknown);
+      else renderUnivariate(recs, selDims, geneVals, patients, epLabel, unknown);
+    }
+
+    function showExports() { $("#cx-csv").style.display = ""; $("#cx-svg").style.display = ""; $("#cx-png").style.display = ""; }
+
+    // ── Univariate：每個因子各自一個 Cox ──
+    function renderUnivariate(recs, selDims, geneVals, patients, epLabel, unknown) {
+      const items = [];
+      recs.forEach(g => {
+        const vals = geneVals.get(g.rec.gene_id);
+        const elig = patients.map(p => ({ p, expr: vals[p.idx], surv: survOf(p.clin) })).filter(o => isFinite(o.expr) && o.surv);
+        const grp = splitGroups(elig.map(o => o.expr), state.split);
+        const rows = [];
+        elig.forEach((o, i) => { if (grp[i] === 1) rows.push({ x: 1, surv: o.surv }); else if (grp[i] === 0) rows.push({ x: 0, surv: o.surv }); });
+        items.push(fitRow(`${g.label}: High vs Low`, rows, g.label));
+      });
+      selDims.forEach(d => {
+        const [bl, al] = labelsOf(d);
+        const rows = [];
+        patients.forEach(p => {
+          const surv = survOf(p.clin); if (!surv) return;
+          const b = classify(d, p.clin[d.field], undefined);
+          if (b === "advanced") rows.push({ x: 1, surv }); else if (b === "baseline") rows.push({ x: 0, surv });
+        });
+        items.push(fitRow(`${d.name}: ${al} vs ${bl}`, rows, d.name));
+      });
+      // FDR：跨可估計的列校正
+      const est = items.filter(it => it.state !== "nodata" && isFinite(it.p));
+      const q = benjaminiHochberg(est.map(it => it.p));
+      est.forEach((it, k) => { it.q = q[k]; const st = pStars(q[k]); it.stars = st === "ns" ? "" : st; it.pText = fmtP(it.p); it.tip += `, q=${q[k].toPrecision(2)}`; });
+      items.forEach(it => { if (it.state === "nodata") it.pText = ""; });
+
+      lastItems = items;
+      resultEl.innerHTML = forestSVG(items, {
+        caption: `Univariate Cox · ${state.cancer} · ${epLabel}${state.months > 0 ? ` · ${state.months}-mo` : ""}`,
+        scheme: "rg",
+      });
+      const note = document.createElement("div"); note.className = "cx-legend";
+      note.textContent = `Each factor in its own univariate Cox (${epLabel}). Genes: High vs Low (${state.split}); clinical: advanced vs baseline. ★ FDR q<0.05 ★★<0.01 ★★★<0.001 ★★★★<0.0001 · faded = <10 per group or <10 events · red HR>1 (worse), green HR<1 (better)${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`;
+      resultEl.appendChild(note);
+      showExports();
+      statusEl.textContent = `Done — ${items.length} factor(s).`;
+    }
+
+    // ── Multivariate：所有選到的因子放進同一個 Cox（互相校正，complete-case）──
+    function renderMultivariate(recs, selDims, geneVals, patients, epLabel, unknown) {
+      const elig = patients.map(p => ({ p, surv: survOf(p.clin) })).filter(o => o.surv);
+      const covs = [];   // 每個共變量：{label, code:[每位 elig 病人的 0/1 或 null=缺]}
+      recs.forEach(g => {
+        const vals = geneVals.get(g.rec.gene_id);
+        const expr = elig.map(o => vals[o.p.idx]);
+        const finiteIdx = []; expr.forEach((v, i) => { if (isFinite(v)) finiteIdx.push(i); });
+        const grpF = splitGroups(finiteIdx.map(i => expr[i]), state.split);   // split 在「有表現」的病人上算
+        const code = new Array(elig.length).fill(null);
+        finiteIdx.forEach((i, k) => { code[i] = grpF[k] === 1 ? 1 : grpF[k] === 0 ? 0 : null; });
+        covs.push({ label: `${g.label}: High vs Low`, code });
+      });
+      selDims.forEach(d => {
+        const [bl, al] = labelsOf(d);
+        const code = elig.map(o => { const b = classify(d, o.p.clin[d.field], undefined); return b === "advanced" ? 1 : b === "baseline" ? 0 : null; });
+        covs.push({ label: `${d.name}: ${al} vs ${bl}`, code });
+      });
+      if (!covs.length) { statusEl.className = "status err"; statusEl.textContent = "Select at least one factor for the model."; return; }
+      const keep = [];
+      for (let i = 0; i < elig.length; i++) if (covs.every(c => c.code[i] != null)) keep.push(i);
+      const nEvents = keep.reduce((s, i) => s + elig[i].surv.e, 0);
+      if (keep.length < covs.length + 2 || nEvents < 2) {
+        statusEl.className = "status err";
+        statusEl.textContent = `Not enough complete cases (n=${keep.length}, events=${nEvents}) for ${covs.length} covariate(s). Remove a factor.`;
+        return;
+      }
+      const times = keep.map(i => elig[i].surv.tm), events = keep.map(i => elig[i].surv.e);
+      const X = keep.map(i => covs.map(c => c.code[i]));
+      const fit = coxPH(times, events, X);
+      if (fit.error) { statusEl.className = "status err"; statusEl.textContent = `Model not estimable: ${fit.error}. Try removing a collinear factor.`; return; }
+
+      const items = covs.map((c, k) => {
+        const hr = fit.hr[k], lo = fit.ciLow[k], hi = fit.ciHigh[k], p = fit.p[k];
+        const st = pStars(p);
+        return {
+          label: c.label, hr, ciLow: lo, ciHigh: hi, p, pText: fmtP(p), stars: st === "ns" ? "" : st, state: "ok",
+          tip: `${c.label}: adjusted HR=${hr.toFixed(2)} (${lo.toFixed(2)}–${hi.toFixed(2)}), p=${p.toPrecision(2)}`,
+        };
+      });
+      lastItems = items;
+      resultEl.innerHTML = forestSVG(items, {
+        caption: `Multivariate Cox · ${state.cancer} · ${epLabel}${state.months > 0 ? ` · ${state.months}-mo` : ""}`,
+        scheme: "rg",
+      });
+      const epv = nEvents / covs.length;
+      const note = document.createElement("div"); note.className = "cx-legend";
+      note.innerHTML = `One multivariate Cox (${epLabel}), all factors mutually adjusted · n=${fit.n} complete cases, ${fit.events} events, ${covs.length} covariates. Genes High vs Low (${state.split}); clinical advanced vs baseline. p = Wald. ★ p<0.05 ★★<0.01 ★★★<0.001 ★★★★<0.0001 · red adjusted HR>1 (worse), green <1 (better)${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`
+        + (epv < 10 ? `<br><span style="color:#b45309">${epv.toFixed(1)} events per covariate (&lt;10) — estimates may be unstable; consider fewer factors.</span>` : "");
+      resultEl.appendChild(note);
+      showExports();
+      statusEl.textContent = `Done — multivariate, n=${fit.n}, ${fit.events} events.`;
+    }
+
+    function exportCSV() {
+      if (!lastItems) return;
+      let csv, name;
+      if (lastModel === "multi") {
+        csv = "Factor,adjHR,CI_low,CI_high,p_wald\n";
+        lastItems.forEach(it => { csv += `"${it.label}",${it.hr.toFixed(4)},${it.ciLow.toFixed(4)},${it.ciHigh.toFixed(4)},${it.p.toExponential(4)}\n`; });
+        name = `cox_multivariate_${lastCancer}_${lastEndpoint}.csv`;
+      } else {
+        csv = "Factor,HR,CI_low,CI_high,p,q,n_index,n_ref,events\n";
+        lastItems.forEach(it => {
+          if (it.state === "nodata") { csv += `"${it.label}",NA,NA,NA,NA,NA,NA,NA,NA\n`; return; }
+          csv += `"${it.label}",${it.hr.toFixed(4)},${it.ciLow.toFixed(4)},${it.ciHigh.toFixed(4)},${it.p.toExponential(4)},${(it.q != null ? it.q.toExponential(4) : "NA")},${it.n1},${it.n0},${it.events}\n`;
+        });
+        name = `cox_univariate_${lastCancer}_${lastEndpoint}.csv`;
+      }
+      dl(new Blob([csv], { type: "text/csv" }), name);
+    }
+    function firstSVG() { return resultEl.querySelector("svg"); }
+    function dl(blob, name) { const u = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = u; a.download = name; a.click(); URL.revokeObjectURL(u); }
+    function downloadSVG() { const svg = firstSVG(); if (!svg) return; dl(new Blob([new XMLSerializer().serializeToString(svg)], { type: "image/svg+xml;charset=utf-8" }), lastSVGName + ".svg"); }
+    function downloadPNG() {
+      const svg = firstSVG(); if (!svg) return;
+      const vb = svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal : null;
+      const W = vb && vb.width ? vb.width : svg.clientWidth, H = vb && vb.height ? vb.height : svg.clientHeight;
+      const scale = Math.max(2, Math.ceil(2400 / W));
+      const xml = new XMLSerializer().serializeToString(svg);
+      const img = new Image();
+      img.onload = () => { const c = document.createElement("canvas"); c.width = Math.round(W * scale); c.height = Math.round(H * scale); const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height); c.toBlob(b => dl(b, lastSVGName + ".png"), "image/png"); };
+      img.onerror = () => alert("PNG export failed (try SVG).");
+      img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(xml);
+    }
+
+    renderDims();
+  },
+};

@@ -244,6 +244,146 @@ export function coxPH1Stratified(times, events, x, strata) {
 }
 
 // =====================================================================
+// 多共變量 Cox 回歸（Breslow ties + Newton-Raphson）── UniV/MtV 用
+// ---------------------------------------------------------------------
+// X：n×p 設計矩陣（array of arrays，一列一病人、一行一共變量）。
+// 類別變數（3 級以上）請先在外部 dummy/indicator 化成多個 0/1 行再傳進來。
+// 回傳每個共變量的 {beta,hr,se,ciLow,ciHigh,z,p} 與整體 LR test。
+// 不變量：p=1 時結果與 coxPH1 完全一致；資訊矩陣奇異（共線/separation）回 error。
+// =====================================================================
+
+// 對稱矩陣（或一般方陣）反矩陣：Gauss-Jordan + partial pivoting；奇異回 null
+function matInverse(Ain) {
+  const n = Ain.length;
+  const A = Ain.map((r, i) => r.slice().concat(Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))));
+  for (let col = 0; col < n; col++) {
+    let piv = col;
+    for (let r = col + 1; r < n; r++) if (Math.abs(A[r][col]) > Math.abs(A[piv][col])) piv = r;
+    if (Math.abs(A[piv][col]) < 1e-12) return null;   // 近奇異
+    if (piv !== col) { const t = A[piv]; A[piv] = A[col]; A[col] = t; }
+    const d = A[col][col];
+    for (let c = 0; c < 2 * n; c++) A[col][c] /= d;
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = A[r][col];
+      if (f === 0) continue;
+      for (let c = 0; c < 2 * n; c++) A[r][c] -= f * A[col][c];
+    }
+  }
+  return A.map(r => r.slice(n));
+}
+
+// log Γ（Lanczos 近似）
+function gammln(xx) {
+  const cof = [76.18009172947146, -86.50532032941677, 24.01409824083091,
+    -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
+  let x = xx, y = xx, tmp = x + 5.5; tmp -= (x + 0.5) * Math.log(tmp);
+  let ser = 1.000000000190015;
+  for (let j = 0; j < 6; j++) { y += 1; ser += cof[j] / y; }
+  return -tmp + Math.log(2.5066282746310005 * ser / x);
+}
+// 正規化上不完全 Gamma Q(a,x)=1-P(a,x)（series / continued fraction，Numerical Recipes）
+function gammaQ(a, x) {
+  if (x < 0 || a <= 0) return NaN;
+  if (x === 0) return 1;
+  if (x < a + 1) {
+    let ap = a, sum = 1 / a, del = sum;
+    for (let nn = 0; nn < 300; nn++) { ap += 1; del *= x / ap; sum += del; if (Math.abs(del) < Math.abs(sum) * 1e-14) break; }
+    return 1 - sum * Math.exp(-x + a * Math.log(x) - gammln(a));
+  }
+  const FPMIN = 1e-300;
+  let b = x + 1 - a, c = 1 / FPMIN, d = 1 / b, h = d;
+  for (let i = 1; i <= 300; i++) {
+    const an = -i * (i - a);
+    b += 2; d = an * d + b; if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = b + an / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d; const del = d * c; h *= del; if (Math.abs(del - 1) < 1e-14) break;
+  }
+  return Math.exp(-x + a * Math.log(x) - gammln(a)) * h;
+}
+// chi-square 上尾 p（自由度 df）；df=1 時與 chiSqP1 一致
+export function chiSquareP(x, df) { return gammaQ(df / 2, Math.max(0, x) / 2); }
+
+export function coxPH(times, events, X, opts = {}) {
+  const n = times.length;
+  const p = (X.length && X[0] && X[0].length) || 0;
+  const maxIter = opts.maxIter || 50, tol = opts.tol || 1e-8;
+  const nEvents = events.reduce((s, e) => s + (e ? 1 : 0), 0);
+  if (p === 0) return { error: "no covariates", converged: false, n, events: nEvents, nCov: 0 };
+
+  const order = times.map((_, i) => i).sort((a, b) => times[a] - times[b]); // 時間遞增
+
+  // 一次掃過：回 score 向量 U、資訊矩陣 Info、log partial likelihood
+  // 由最大時間往最小累積 risk set（time >= t），同時間事件用 Breslow 共用 risk set。
+  function pass(beta) {
+    const U = new Array(p).fill(0);
+    const Info = Array.from({ length: p }, () => new Array(p).fill(0));
+    let logL = 0, S0 = 0;
+    const S1 = new Array(p).fill(0);
+    const S2 = Array.from({ length: p }, () => new Array(p).fill(0));
+    let i = n - 1;
+    while (i >= 0) {
+      const t = times[order[i]];
+      let j = i, dCount = 0, dSumEta = 0;
+      const dSumX = new Array(p).fill(0);
+      while (j >= 0 && times[order[j]] === t) {        // 先把此時間點所有列加入 risk set
+        const idx = order[j], xr = X[idx];
+        let eta = 0; for (let k = 0; k < p; k++) eta += beta[k] * xr[k];
+        const w = Math.exp(eta);
+        S0 += w;
+        for (let k = 0; k < p; k++) { S1[k] += w * xr[k]; const wk = w * xr[k]; const row = S2[k]; for (let l = 0; l < p; l++) row[l] += wk * xr[l]; }
+        if (events[idx]) { dCount++; dSumEta += eta; for (let k = 0; k < p; k++) dSumX[k] += xr[k]; }
+        j--;
+      }
+      if (dCount > 0 && S0 > 0) {
+        for (let k = 0; k < p; k++) {
+          const mk = S1[k] / S0;
+          U[k] += dSumX[k] - dCount * mk;
+          for (let l = 0; l < p; l++) Info[k][l] += dCount * (S2[k][l] / S0 - (S1[k] / S0) * (S1[l] / S0));
+        }
+        logL += dSumEta - dCount * Math.log(S0);
+      }
+      i = j;
+    }
+    return { U, Info, logL };
+  }
+
+  let beta = new Array(p).fill(0), converged = false, iterations = 0, singular = false;
+  for (let it = 0; it < maxIter; it++) {
+    iterations = it + 1;
+    const { U, Info } = pass(beta);
+    const inv = matInverse(Info);
+    if (!inv) { singular = true; break; }
+    let maxStep = 0;
+    for (let k = 0; k < p; k++) {
+      let s = 0; for (let l = 0; l < p; l++) s += inv[k][l] * U[l];
+      beta[k] += s; if (Math.abs(s) > maxStep) maxStep = Math.abs(s);
+    }
+    if (maxStep < tol) { converged = true; break; }
+  }
+
+  const final = pass(beta);
+  const cov = matInverse(final.Info);
+  if (singular || !cov) return { error: "singular information matrix (check collinearity / separation)", converged: false, n, events: nEvents, nCov: p };
+
+  const loglik0 = pass(new Array(p).fill(0)).logL;
+  const hr = [], se = [], ciLow = [], ciHigh = [], z = [], pval = [];
+  for (let k = 0; k < p; k++) {
+    const v = cov[k][k], s = v > 0 ? Math.sqrt(v) : NaN;
+    se[k] = s; hr[k] = Math.exp(beta[k]);
+    ciLow[k] = Math.exp(beta[k] - 1.96 * s); ciHigh[k] = Math.exp(beta[k] + 1.96 * s);
+    const zz = (s && isFinite(s)) ? beta[k] / s : 0;
+    z[k] = zz; pval[k] = (s && isFinite(s)) ? 2 * (1 - normCDF(Math.abs(zz))) : 1;
+  }
+  const lr = 2 * (final.logL - loglik0);
+  return {
+    beta: beta.slice(), hr, se, ciLow, ciHigh, z, p: pval, cov,
+    loglik: final.logL, loglik0, lr, lrDf: p, lrP: chiSquareP(lr, p),
+    n, events: nEvents, nCov: p, iterations, converged,
+  };
+}
+
+// =====================================================================
 // 相關係數：Pearson / Spearman（p 用 Fisher z-transformation，normal 近似）
 // 供 GOI 表現 × 免疫分數相關分析。呼叫前請先濾掉任一為 NaN 的配對。
 // =====================================================================

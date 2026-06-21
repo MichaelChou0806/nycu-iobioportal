@@ -3,3 +3,5 @@
 .DS_Store
 Thumbs.db
 structure_note.txt
+# R2 資料產物（臨床/樣本/基因等壓縮檔），不放網站 repo（病人資料＋體積大）。真要追蹤某檔可 git add -f。
+*.csv.gz

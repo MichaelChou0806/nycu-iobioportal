@@ -26,12 +26,13 @@
 - 使用者：HNSC / OSCC 研究者 @ NYCU
 - **最終目標**：把實驗室自己的 **OSCC RNA-seq 資料**接進來，做出可發表的研究分析
 
-**目前有 5 個分析分頁**（app.js `ANALYSES` 順序）：
+**目前有 6 個分析分頁**（app.js `ANALYSES` 順序）：
 1. **Clinical Overview** — 多基因 × 多癌別 × 多臨床維度的表現總覽
 2. **Survival (KM)** — 單/多基因高低分組的生存（基礎、掃描式）
 3. **Advanced Survival** — 多基因組合分組 + 臨床 subset + 亞組 screening 的生存（進階、假設驗證式）
-4. **Immune Correlation** — 基因表現 × 免疫浸潤相關
-5. **Group Comparison** — 基因表現在臨床兩組間的差異（最早的原型）
+4. **Cox Regression** — univariate / multivariate Cox（基因 + 臨床因子的 HR forest plot；OS/DSS/DFI/PFI endpoint）
+5. **Immune Correlation** — 基因表現 × 免疫浸潤相關
+6. **Group Comparison** — 基因表現在臨床兩組間的差異（最早的原型）
 
 ---
 
@@ -98,19 +99,20 @@ js/core/        引擎（共用，與資料集無關）
 js/analyses/    各分析（一檔一個，自給自足）
   clinicalOverview  Clinical Overview
   survival          Survival (KM)
-  survivalGroups    Advanced Survival ← 最近大量開發的模組
+  survivalGroups    Advanced Survival
+  coxRegression     Cox Regression ← univariate / multivariate Cox（forest plot）← 最近開發
   immuneCorr        Immune Correlation
   groupCompare      Group Comparison
 
 app.js          薄殼：ANALYSES 陣列註冊、切頁（HIDE 不銷毀）；分頁名稱用 module 的 .name 自動顯示
 ```
 
-**註冊順序**（app.js ANALYSES）：`[clinicalOverview, survival, survivalGroups, immuneCorr, groupCompare]`
+**註冊順序**（app.js ANALYSES）：`[clinicalOverview, survival, survivalGroups, coxRegression, immuneCorr, groupCompare]`
 **config/**：`datasets.json`（資料來源，含 R2 baseUrl）、`dimensions.tcga.json`（12 個臨床維度）
 
 ---
 
-## 6. 五個分析模組
+## 6. 六個分析模組
 
 ### ① Clinical Overview (`clinicalOverview.js`, ~625 行)
 多基因 × 多癌別 × 多臨床維度總覽。log2FC / row z-score heatmap、Expanded/Condensed 模式、ordinal 維度的 baseline/advanced 逐級別選擇器、FDR。維度勾選 UI（**Advanced Survival 的 screening 維度選擇就是仿這個**）。**基因清單跨分析共享**。
@@ -148,6 +150,16 @@ KM 生存（OS、tumor-only）。基礎、掃描式（單基因 pan-cancer）。
 - **目前限制**：只有 2 個寫死的分組（vital: Alive/Dead、node: N−/N+），未用 dimensions.tcga.json
 - **與其他模組不重複**（Clinical Overview 看臨床分佈不碰表現；這個看表現在臨床組間差異）。但很原始；**未來可考慮**：擴展成用所有 dimensions（像 Clinical Overview 選維度），或評估是否與 Clinical Overview 的單維度視圖合併。目前能用，使用者實測 OK，暫留
 
+### ⑥ Cox Regression (`coxRegression.js`)
+單一癌種、逐因子做 Cox，畫 **forest plot**（`plots.js` 的 `forestSVG`，log-scale HR 軸、HR=1 參考線、三態 ok/weak/nodata、紅 HR>1 綠 HR<1）。
+- **Model 下拉**：Univariate（每因子各自一個 Cox，用 `coxPH1`，跨因子 FDR）/ Multivariate（所有選到的因子放進**一個** `coxPH`，complete-case，互相校正，adjusted HR；圖例顯示 effective n / events / **EPV 警告**；p = Wald）
+- **Endpoint 下拉（資料驅動）**：clinical 有 `<EP>`+`<EP>.time` 才列入（TCGA 有 OS/DSS/DFI/PFI），OSCC 自動沿用
+- 基因 = High vs Low（median/tertile/quartile，與其他模組一致）；臨床因子 = advanced vs baseline（label 寫成自我說明 "X vs Y"，不用 A/B）；無資料維度自動灰掉
+- **vital 排除**（= 存活事件本身會完全分離）；**recurrence 預設不選**（post-baseline，名稱後 amber `†` 標註 + 最下面說明）
+- 共線/separation → `coxPH` 回 error、UI 擋下並提示移除 factor。匯出 CSV/SVG/PNG。localStorage `tcga-tool:cox`
+- **目前限制**：用現有 11 個臨床維度（去 vital）；全是二元，尚未做多級類別 dummy。**待擴充**：數百項臨床 factor + 可搜尋 picker（見 `CLINICAL_TABLE_SPEC.md`）
+- 曾加 VIF 共線性診斷後**移除**：二元因子 VIF 天生偏溫和、幾乎都顯示 low overlap 反而誤導（教訓：二元因子別用 VIF）
+
 ---
 
 ## 7. 統計方法 (`stats.js`, ~279 行，全部用獨立計算交叉驗證過)
@@ -155,6 +167,7 @@ KM 生存（OS、tumor-only）。基礎、掃描式（單基因 pan-cancer）。
 `mannWhitney`, `median`, `mean`, `sd`, `pStars`, `log2FC`, `benjaminiHochberg`, `zscoreRow`,
 `kaplanMeier`, `logRank`, `logRankStratified`,
 `coxPH1`（單變量 Cox，Breslow + Newton-Raphson → `{beta,hr,se,ciLow,ciHigh,p}`）, `coxPH1Stratified`（癌別分層）,
+`coxPH`（多共變量 Cox，Newton-Raphson + 資訊矩陣反矩陣求 SE → per-covariate `{hr,se,ci,p}` + cov + LR test；奇異回 `{error}`；**p=1 時 == coxPH1**）, `chiSquareP`（chi-square 上尾 p，任意 df，給 LR test）,
 `pearsonr`, `spearmanr`（皆回 `{r,p,n}`，p 用 Fisher z；spearman 用平均秩處理 ties）
 
 **驗證過的不變量（改 stats 必須保持）**：
@@ -167,7 +180,7 @@ KM 生存（OS、tumor-only）。基礎、掃描式（單基因 pan-cancer）。
 
 ## 8. 繪圖層 (`plots.js`, ~319 行)
 
-函數：`scatterSVG, barSVG, heatmapSVG, multiBarSVG, kmCurveSVG, corrScatterSVG, corrBarSVG`
+函數：`scatterSVG, barSVG, heatmapSVG, multiBarSVG, kmCurveSVG, corrScatterSVG, corrBarSVG, forestSVG`（forestSVG＝橫向 forest：log-scale HR 軸、HR=1 參考線、三態）
 
 **關鍵技術點（踩過坑、別退回去）**：
 
@@ -220,7 +233,7 @@ KM 生存（OS、tumor-only）。基礎、掃描式（單基因 pan-cancer）。
 
 ### 進階生存分析（Advanced Survival 的延伸）
 - [x] ~~多基因組合分組 HH vs LL~~（**已完成**，含 subset 與 screening）
-- [ ] **單 / 多變量 Cox 回歸**（納入臨床共變量）：嚴格證明基因分組獨立於臨床的方法（gene + N 一起、adjusted HR）；也是嚴格證明「效應被臨床修飾」（gene × clinical 交互項）的正解，補 screening 的探索性。重用 `coxPH1`
+- [x] ~~**單 / 多變量 Cox 回歸**（納入臨床共變量）~~（**已完成 v1**：Cox Regression 分頁，univariate + multivariate forest plot、OS/DSS/DFI/PFI endpoint、EPV 警告；新增 `coxPH` 多共變量引擎）。**待擴充**：數百項臨床 factor + 可搜尋 picker（需先整理上傳臨床表，見 `CLINICAL_TABLE_SPEC.md`）、多級類別 dummy coding、（可選）gene × clinical 交互項以嚴格驗證 effect modification
 - [ ] **ROC / 時間依賴 ROC**（基因當 predictor）
 - [ ] **Logistic regression**
 
@@ -251,7 +264,7 @@ KM 生存（OS、tumor-only）。基礎、掃描式（單基因 pan-cancer）。
 
 ## 14. 快速啟動檢查清單（接手後想動手時）
 
-1. 起本機 server 開來看，確認 5 個分頁都正常（線上版 <https://nycu-iobioportal.pages.dev/> 可對照）
+1. 起本機 server 開來看，確認 6 個分頁都正常（線上版 <https://nycu-iobioportal.pages.dev/> 可對照；注意線上版尚無 Cox Regression）
 2. 確認要做的是路線圖哪一項（Cox 回歸？ROC？OSCC 接入？）
 3. 相關檔在 `js/analyses/` 或 `js/core/stats.js`、`plots.js`
 4. 新分析 = 寫一個自足的 `js/analyses/xxx.js`（暴露 `{id, name, mount}`）＋ 在 `app.js` ANALYSES 註冊一行

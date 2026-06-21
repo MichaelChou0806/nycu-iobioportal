@@ -10,6 +10,7 @@ import { loadDatasetConfigs } from "./core/dataset.js";
 import { clinicalOverview } from "./analyses/clinicalOverview.js";
 import { survival } from "./analyses/survival.js";
 import { survivalGroups } from "./analyses/survivalGroups.js";
+import { coxRegression } from "./analyses/coxRegression.js";
 import { immuneCorr } from "./analyses/immuneCorr.js";
 import { groupCompare } from "./analyses/groupCompare.js";
 
@@ -18,6 +19,7 @@ const ANALYSES = [
   clinicalOverview,
   survival,
   survivalGroups,
+  coxRegression,
   immuneCorr,
   groupCompare,
 ];
