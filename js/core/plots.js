@@ -180,7 +180,11 @@ export function multiBarSVG(groups, opts) {
 // =====================================================================
 export function kmCurveSVG(curves, opts) {
   const captionLines = opts.caption ? String(opts.caption).split("\n").flatMap(seg => wrapText(seg, 60)) : [];
-  const L = 58, T = Math.max(36, 14 + captionLines.length * 16), R = 16, B = 80, plotW = 480, plotH = 300;
+  const L = 58, T = Math.max(36, 14 + captionLines.length * 16), R = 16, plotW = 480, plotH = 300;
+  // number-at-risk 表：呼叫端每組有傳 times[]（追蹤時間）時才畫；純加在 x 軸下方，不動曲線
+  const hasRisk = curves.length > 0 && curves.every(c => Array.isArray(c.times));
+  const riskRowH = 16, riskH = hasRisk ? 18 + curves.length * riskRowH : 0;
+  const B = 48 + (hasRisk ? riskH + 10 : 32);   // 無 risk table 時 B=80（與原本一致）
   const W = L + plotW + R, H = T + plotH + B;
   const xMax = opts.xMax || Math.max(1, ...curves.map(c => c.km.length ? c.km[c.km.length - 1].t : 1));
   const xS = t => L + (t / xMax) * plotW;
@@ -205,6 +209,16 @@ export function kmCurveSVG(curves, opts) {
   const sy = T + plotH - 8;
   if (opts.hrText) s += `<text x="${L + 8}" y="${sy - 16}" font-size="11" fill="#1f2733">${opts.hrText}</text>`;
   if (opts.pText) s += `<text x="${L + 8}" y="${sy}" font-size="11" fill="#1f2733">${opts.pText}</text>`;
+  // number at risk（對齊 x 軸刻度；每格 = 該組追蹤時間 ≥ 該刻度的人數）
+  if (hasRisk) {
+    const top = T + plotH + 50;
+    s += `<text x="2" y="${top}" font-size="10.5" font-weight="600" fill="#6b7480">No. at risk</text>`;
+    curves.forEach((c, ci) => {
+      const rowY = top + (ci + 1) * riskRowH;
+      s += `<text x="2" y="${rowY}" text-anchor="start" font-size="10.5" font-weight="600" fill="${c.color}">${c.label}</text>`;
+      for (let k = 0; k <= 5; k++) { const t = xMax * k / 5, n = c.times.reduce((a, tt) => a + (tt >= t ? 1 : 0), 0); s += `<text x="${xS(t)}" y="${rowY}" text-anchor="middle" font-size="10.5" fill="#1f2733">${n}</text>`; }
+    });
+  }
   s += `</svg>`;
   return s;
 }

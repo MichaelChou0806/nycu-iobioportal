@@ -450,7 +450,7 @@ export const survivalGroups = {
       let lr, cox, strat = false;
       if (strata) { lr = logRankStratified(allTm, allE, allG, strata); cox = coxPH1Stratified(allTm, allE, allG, strata); strat = true; }
       else { lr = logRank(allTm, allE, allG); cox = coxPH1(allTm, allE, allG); }
-      const curves = [{ label: groupLabel("A"), color: A_COLOR, km: kmA, n: A.length }, { label: groupLabel("B"), color: B_COLOR, km: kmB, n: B.length }];
+      const curves = [{ label: groupLabel("A"), color: A_COLOR, km: kmA, n: A.length, times: A.map(r => r.tm) }, { label: groupLabel("B"), color: B_COLOR, km: kmB, n: B.length, times: B.map(r => r.tm) }];
       const hrText = isFinite(cox.hr) ? `HR (A vs B${strat ? ", stratified" : ""}) = ${cox.hr.toFixed(2)} (95% CI ${cox.ciLow.toFixed(2)}–${cox.ciHigh.toFixed(2)})` : "HR = n/a";
       resultEl.innerHTML = kmCurveSVG(curves, { caption, xLabel: xCap, pText: `Log-rank p = ${fmtP(lr.p)}${strat ? " (stratified)" : ""}`, hrText, xMax: state.months > 0 ? state.months : undefined });
       return true;

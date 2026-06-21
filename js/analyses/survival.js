@@ -271,7 +271,7 @@ export const survival = {
       let lr, cox, stratified = false;
       if (strata) { const st = strata; lr = logRankStratified(allTm, allE, allG, st); cox = coxPH1Stratified(allTm, allE, allG, st); stratified = true; }
       else { lr = logRank(allTm, allE, allG); cox = coxPH1(allTm, allE, allG); }
-      const curves = [{ label: "High", color: HIGH_COLOR, km: kmHigh, n: high.length }, { label: "Low", color: LOW_COLOR, km: kmLow, n: low.length }];
+      const curves = [{ label: "High", color: HIGH_COLOR, km: kmHigh, n: high.length, times: high.map(r => r.tm) }, { label: "Low", color: LOW_COLOR, km: kmLow, n: low.length, times: low.map(r => r.tm) }];
       const hrText = isFinite(cox.hr) ? `HR (High vs Low${stratified ? ", stratified" : ""}) = ${cox.hr.toFixed(2)} (95% CI ${cox.ciLow.toFixed(2)}–${cox.ciHigh.toFixed(2)})` : "HR = n/a";
       resultEl.innerHTML = kmCurveSVG(curves, {
         caption: captionScope,
