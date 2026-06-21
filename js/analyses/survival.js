@@ -18,6 +18,13 @@ import { kmCurveSVG, heatmapSVG } from "../core/plots.js";
 import { getGOIs, setGOIs, onGOIsChanged, parseGenes } from "../core/gois.js";
 
 const DAYS_PER_MONTH = 30.4375;
+// 存活 endpoint（OS/DSS/DFI/PFI）。實際顯示哪些由 clinical 有無對應欄位決定（資料驅動，OSCC 自動沿用）。
+const ENDPOINTS = [
+  { id: "OS", event: "OS", time: "OS.time", label: "OS" },
+  { id: "DSS", event: "DSS", time: "DSS.time", label: "DSS" },
+  { id: "DFI", event: "DFI", time: "DFI.time", label: "DFI" },
+  { id: "PFI", event: "PFI", time: "PFI.time", label: "PFI" },
+];
 const HIGH_COLOR = "#ef4444", LOW_COLOR = "#3b82f6";
 const SHORT = { median: "median", tertile: "tertile", quartile: "quartile" };
 
@@ -74,6 +81,10 @@ export const survival = {
     injectStyles();
     const availCancers = dataset.cancers.map(c => c.code);
     const nTumorOf = Object.fromEntries(dataset.cancers.map(c => [c.code, c.n_tumor]));
+    // 可用 endpoint：clinical 同時有 event 與 time 欄位才列入（資料驅動）
+    const clinFields = new Set(dataset.clinicalFields || (dataset.clinical.size ? Object.keys(dataset.clinical.values().next().value) : []));
+    const endpoints = ENDPOINTS.filter(ep => clinFields.has(ep.event) && clinFields.has(ep.time));
+    if (!endpoints.length) endpoints.push(ENDPOINTS[0]);
     const saved = loadState();
     let state = {
       cancers: (Array.isArray(saved.cancers) ? saved.cancers.filter(c => availCancers.includes(c)) : []).concat(availCancers.filter(c => !(saved.cancers || []).includes(c))),
@@ -83,7 +94,9 @@ export const survival = {
       view: saved.view || "percancer",     // 單基因多癌種：percancer | pooled
       scheme: saved.scheme || "rg",          // rg=紅綠, rb=紅藍(色盲友善)
       colorMax: saved.colorMax != null ? saved.colorMax : 0,  // 0=auto
+      endpoint: endpoints.some(ep => ep.id === saved.endpoint) ? saved.endpoint : endpoints[0].id,
     };
+    const currentEndpoint = () => endpoints.find(ep => ep.id === state.endpoint) || endpoints[0];
     let dragCancer = null, lastSVGName = "km", lastKM = null;  // lastKM 供 Prism 匯出
 
     container.innerHTML = `
@@ -108,6 +121,7 @@ export const survival = {
 
         <div class="sv-sec">
           <div class="sv-toolbar">
+            <label class="sv-ctl">Endpoint<select id="sv-endpoint">${endpoints.map(ep => `<option value="${ep.id}">${ep.label}</option>`).join("")}</select></label>
             <label class="sv-ctl">Split
               <select id="sv-split">
                 <option value="median">Median (50/50)</option>
@@ -134,12 +148,12 @@ export const survival = {
           <div id="sv-status" class="status"></div>
           <div id="sv-result" class="sv-result"></div>
         </div>
-        <div class="sv-note">Tumor only · endpoint OS. Tertile/Quartile drop the middle group (per-group n shown). Pooled splits High/Low within each cancer and uses cancer-stratified log-rank/Cox.</div>
+        <div class="sv-note">Tumor only · survival endpoint selectable above. Tertile/Quartile drop the middle group (per-group n shown). Pooled splits High/Low within each cancer and uses cancer-stratified log-rank/Cox.</div>
       </div>`;
 
     const $ = s => container.querySelector(s);
     const chipBox = $("#sv-cancers"), genesEl = $("#sv-genes"), statusEl = $("#sv-status"), resultEl = $("#sv-result");
-    const splitSel = $("#sv-split"), monthsEl = $("#sv-months"), viewSel = $("#sv-view"), schemeSel = $("#sv-scheme"), cmaxEl = $("#sv-cmax");
+    const splitSel = $("#sv-split"), monthsEl = $("#sv-months"), viewSel = $("#sv-view"), schemeSel = $("#sv-scheme"), cmaxEl = $("#sv-cmax"), endpointSel = $("#sv-endpoint");
 
     function commit() { saveState(state); }
     // GOIs 共享
@@ -147,6 +161,7 @@ export const survival = {
     genesEl.addEventListener("input", () => setGOIs(parseGenes(genesEl.value)));
     const off = onGOIsChanged(list => { if (document.activeElement !== genesEl) genesEl.value = list.join(", "); updateControls(); });
     // 控制項初值
+    endpointSel.value = state.endpoint;
     splitSel.value = state.split; if (state.months > 0) monthsEl.value = state.months;
     viewSel.value = state.view; schemeSel.value = state.scheme; if (state.colorMax > 0) cmaxEl.value = state.colorMax;
 
@@ -184,6 +199,7 @@ export const survival = {
     $("#sv-all").addEventListener("click", () => { state.selectedCancers = state.cancers.slice(); commit(); renderCancers(); updateControls(); });
     $("#sv-none").addEventListener("click", () => { state.selectedCancers = []; commit(); renderCancers(); updateControls(); });
     splitSel.addEventListener("change", () => { state.split = splitSel.value; commit(); });
+    endpointSel.addEventListener("change", () => { state.endpoint = endpointSel.value; commit(); });
     monthsEl.addEventListener("change", () => { const v = Number(monthsEl.value); state.months = (monthsEl.value === "" || !isFinite(v) || v <= 0) ? 0 : v; commit(); });
     viewSel.addEventListener("change", () => { state.view = viewSel.value; commit(); updateControls(); });
     schemeSel.addEventListener("change", () => { state.scheme = schemeSel.value; commit(); });
@@ -191,9 +207,10 @@ export const survival = {
 
     // 取存活資料（只取 tumor、套月數截斷）：回傳 {expr,e,tm}[]
     function survivalRows(vals, patients) {
+      const ep = currentEndpoint();
       const cut = state.months > 0 ? state.months : Infinity; const out = [];
       for (const p of patients) {
-        const expr = vals[p.idx], os = Number(p.clin["OS"]), t = Number(p.clin["OS.time"]);
+        const expr = vals[p.idx], os = Number(p.clin[ep.event]), t = Number(p.clin[ep.time]);
         if (!isFinite(expr) || !isFinite(os) || !isFinite(t) || t < 0) continue;
         let tm = t / DAYS_PER_MONTH, e = os ? 1 : 0;
         if (tm > cut) { e = 0; tm = cut; }
@@ -237,7 +254,7 @@ export const survival = {
 
       const note = document.createElement("div"); note.className = "sv-legend";
       note.textContent = isKM
-        ? `Endpoint OS · ${splitLabel(state.split)}${state.months > 0 ? ` · capped ${state.months} mo` : ""}${lastKM && lastKM.stratified ? " · cancer-stratified" : ""}${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`
+        ? `Endpoint ${currentEndpoint().label} · ${splitLabel(state.split)}${state.months > 0 ? ` · capped ${state.months} mo` : ""}${lastKM && lastKM.stratified ? " · cancer-stratified" : ""}${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`
         : `★ log-rank FDR q<0.05 ★★<0.01 ★★★<0.001 ★★★★<0.0001 | red=HR>1 (worse) ${state.scheme === "rb" ? "blue" : "green"}=HR<1 (better) | grey=no data, faded=too few${unknown.length ? ` | Unrecognized: ${unknown.join(", ")}` : ""}`;
       resultEl.appendChild(note);
       if (isKM) $("#sv-prism").style.display = "";
@@ -271,7 +288,7 @@ export const survival = {
       lastSVGName = `KM_${geneRec.label}_${cancer}`;
       const vals = geneVals.get(geneRec.rec.gene_id);
       const { high, low } = highLow(survivalRows(vals, patients.filter(p => p.cancer === cancer)));
-      renderKM(geneRec.label, `${geneRec.label} ${cancer}`, high, low, null, `${geneRec.label} — ${cancer} · OS · ${SHORT[state.split]}`);
+      renderKM(geneRec.label, `${geneRec.label} ${cancer}`, high, low, null, `${geneRec.label} — ${cancer} · ${currentEndpoint().label} · ${SHORT[state.split]}`);
     }
 
     // 單基因多癌種 pooled：每癌種內各自切，合併，按癌種分層
@@ -287,7 +304,7 @@ export const survival = {
       });
       const strataAll = hStrata.concat(lStrata);  // 對齊 high.concat(low)
       renderKM(geneRec.label, `${geneRec.label} pooled`, high, low, strataAll,
-        `${geneRec.label} · pooled ${cancers.length} cancers (stratified) · OS · ${SHORT[state.split]}`);
+        `${geneRec.label} · pooled ${cancers.length} cancers (stratified) · ${currentEndpoint().label} · ${SHORT[state.split]}`);
     }
 
     // 多基因/多癌種：HR heatmap
@@ -322,7 +339,7 @@ export const survival = {
       const colorMax = state.colorMax > 0 ? state.colorMax : Math.min(4, Math.max(0.5, Math.ceil(maxAbs * 10) / 10));
       resultEl.innerHTML = heatmapSVG(rows, cols, cells, {
         colorMax, scheme: state.scheme, legendLabel: "log2 HR",
-        caption: `Hazard ratio (High vs Low) · OS · ${SHORT[state.split]}${state.months > 0 ? ` · ${state.months} mo` : ""}`,
+        caption: `Hazard ratio (High vs Low) · ${currentEndpoint().label} · ${SHORT[state.split]}${state.months > 0 ? ` · ${state.months} mo` : ""}`,
       });
     }
 

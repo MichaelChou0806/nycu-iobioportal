@@ -1,6 +1,6 @@
 # NYCU IOBioPortal
 
-瀏覽器端、免安裝、純客戶端運算的 TCGA pan-cancer 基因表現 ＋ 免疫分析工具。
+瀏覽器端、免安裝、純客戶端運算的 TCGA pan-cancer 基因表現 ＋ 免疫 ＋ 生存分析工具。
 打開網頁就能用，所有運算在瀏覽器內完成，**沒有後端伺服器**。
 
 線上版：<https://nycu-iobioportal.pages.dev/>
@@ -11,10 +11,12 @@
 
 給實驗室同事用的互動式分析平台。輸入基因（GOI），就能在 33 種 TCGA 癌別上做：
 
-- 分組表現比較
-- 多基因 × 多癌別 × 多臨床維度總覽
-- Kaplan–Meier 生存分析
+- 多基因 × 多癌別 × 多臨床維度的表現總覽
+- Kaplan–Meier 生存分析（單／多基因、單／多癌別、pooled）
+- 多基因組合分組的進階生存（HH vs LL ＋ 臨床亞組 screening）
+- Univariate ／ Multivariate Cox 回歸（基因 ＋ 臨床因子的 HR forest plot）
 - 基因表現 × 免疫浸潤相關性
+- 單基因在臨床兩組間的表現差異
 
 不用裝任何東西、不用寫程式、不用跑 R。
 
@@ -63,10 +65,12 @@ js/core/        引擎（共用）
   gois        跨分析共用的基因清單
 
 js/analyses/    各分析（一檔一個，互不干擾）
-  Group Compare       單基因 × 單癌別分組比較（U-test、scatter＋bar）
   Clinical Overview   多基因 × 多癌別 × 多臨床維度總覽（log2FC / z-score heatmap）
-  Survival            KM 生存（log-rank、Cox HR；單一／多癌別／pooled）
+  Survival (KM)       KM 生存（log-rank、Cox HR；單一／多癌別／pooled）
+  Advanced Survival   多基因組合分組 ＋ 臨床 subset ＋ 亞組 screening
+  Cox Regression      univariate／multivariate Cox（HR forest plot；OS/DSS/DFI/PFI endpoint）
   Immune Correlation  基因表現 × 免疫浸潤相關（Spearman / Pearson，per-cancer）
+  Group Comparison    單基因 × 單癌別分組比較（U-test、scatter＋bar）
 
 app.js          薄殼：註冊分析、切換頁籤
 ```
@@ -76,8 +80,8 @@ app.js          薄殼：註冊分析、切換頁籤
 ## 統計方法
 
 全部用獨立計算交叉驗證過：
-Mann–Whitney U、Kaplan–Meier、log-rank（含 stratified）、Cox PH（含 stratified）、
-Pearson／Spearman（p 值用 Fisher z 轉換）、Benjamini–Hochberg FDR。
+Mann–Whitney U、Kaplan–Meier、log-rank（含 stratified）、Cox PH（單變量／多變量、含 stratified）、
+Pearson／Spearman（p 值用 Fisher z 轉換）、Benjamini–Hochberg FDR、chi-square（likelihood-ratio test 用）。
 
 ---
 
@@ -106,13 +110,14 @@ python -m http.server 8000
 ## 還沒完成 / 路線圖
 
 ### 進階生存分析
-- [ ] 多基因組合分組：2–3 個基因「同時 High vs 同時 Low」(HH vs LL) 比生存
-- [ ] 單／多變量 Cox 回歸（納入臨床共變量）
+- [x] 多基因組合分組（HH vs LL）＋ 臨床亞組 screening（**Advanced Survival** 分頁）
+- [x] 單／多變量 Cox 回歸（納入臨床共變量；**Cox Regression** 分頁，HR forest plot、OS/DSS/DFI/PFI endpoint）
+- [ ] 數百項臨床 factor ＋ 可搜尋 picker（接入大臨床表後）
 - [ ] ROC ／ 時間依賴 ROC（基因當 predictor）
 - [ ] Logistic regression
 
 ### OSCC 資料接入（最終目標）
-- [ ] 把實驗室 OSCC RNA-seq 做成相同格式（per-gene、clinical、自跑免疫 deconvolution）
+- [ ] 把實驗室 OSCC RNA-seq 做成相同格式（per-gene、clinical、自跑免疫 deconvolution；臨床表格式見 `CLINICAL_TABLE_SPEC.md`）
 - [ ] `datasets.json` 加一條 ＋ OSCC 專屬 dimensions
 - [ ] 注意事項：batch effect（最大風險，務必記錄並校正）、小樣本統計 power、臨床欄位不同（補 ENE）
 

@@ -8,7 +8,7 @@ body{margin:0;background:var(--bg);color:var(--ink);
 header{padding:18px 28px;border-bottom:1px solid var(--line);background:var(--panel);
   display:flex;align-items:flex-end;justify-content:space-between;gap:20px;flex-wrap:wrap}
 header h1{margin:0;font-size:18px;font-weight:650}
-header .sub{color:var(--muted);font-size:13px;margin-top:3px}
+header .sub{color:var(--muted);font-size:11.5px;margin-top:3px}
 .wrap{max-width:920px;margin:0 auto;padding:24px 28px}
 
 .tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}

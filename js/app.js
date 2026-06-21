@@ -49,7 +49,7 @@ async function main() {
   });
   dsel.addEventListener("change", async () => {
     const d = datasets.find(x => x.id === dsel.value);
-    statusEl.className = "status"; statusEl.textContent = "Loading " + d.name + " …";
+    statusEl.style.display = ""; statusEl.className = "status"; statusEl.textContent = "Loading " + d.name + " …";
     try { await d.load(); } catch (e) {
       statusEl.className = "status err"; statusEl.textContent = "Failed to load: " + e.message; return;
     }
@@ -77,9 +77,11 @@ async function main() {
 }
 
 function showStatus() {
+  // dataset 摘要放到 header 副標（dataset-aware，OSCC 換資料來源自動更新）
+  const info = document.getElementById("datasetInfo");
+  info.textContent = `${activeDataset.name} · ${activeDataset.samples.length.toLocaleString()} samples · ${activeDataset.clinical.size.toLocaleString()} patients · ${Object.keys(activeDataset.geneIndex.by_ensembl).length.toLocaleString()} genes`;
   const s = document.getElementById("appStatus");
-  s.className = "status";
-  s.textContent = `Ready · ${activeDataset.name} · ${activeDataset.samples.length.toLocaleString()} samples · ${activeDataset.clinical.size.toLocaleString()} patients · ${Object.keys(activeDataset.geneIndex.by_ensembl).length.toLocaleString()} genes`;
+  if (s) s.style.display = "none";   // ready 後隱藏 tab 下方那行（loading/error 時才顯示）
 }
 
 // 顯示某分析：把其他的藏起來、顯示這個；第一次顯示才建立（之後留著不銷毀）

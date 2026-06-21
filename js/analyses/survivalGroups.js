@@ -72,6 +72,13 @@ function injectStyles() {
   const el = document.createElement("style"); el.textContent = css; document.head.appendChild(el);
 }
 
+// 存活 endpoint（OS/DSS/DFI/PFI）。實際顯示哪些由 clinical 有無對應欄位決定（資料驅動，OSCC 自動沿用）。
+const ENDPOINTS = [
+  { id: "OS", event: "OS", time: "OS.time", label: "OS" },
+  { id: "DSS", event: "DSS", time: "DSS.time", label: "DSS" },
+  { id: "DFI", event: "DFI", time: "DFI.time", label: "DFI" },
+  { id: "PFI", event: "PFI", time: "PFI.time", label: "PFI" },
+];
 const LS = "tcga-tool:survivalGroups";
 function loadState() { try { return JSON.parse(localStorage.getItem(LS)) || {}; } catch (e) { return {}; } }
 function saveState(st) { try { localStorage.setItem(LS, JSON.stringify(st)); } catch (e) {} }
@@ -132,6 +139,10 @@ export const survivalGroups = {
     const dimById = Object.fromEntries(dims.map(d => [d.id, d]));
     const availCancers = dataset.cancers.map(c => c.code);
     const nTumorOf = Object.fromEntries(dataset.cancers.map(c => [c.code, c.n_tumor]));
+    // 可用 endpoint：clinical 同時有 event 與 time 欄位才列入（資料驅動）
+    const clinFields = new Set(dataset.clinicalFields || (dataset.clinical.size ? Object.keys(dataset.clinical.values().next().value) : []));
+    const endpoints = ENDPOINTS.filter(ep => clinFields.has(ep.event) && clinFields.has(ep.time));
+    if (!endpoints.length) endpoints.push(ENDPOINTS[0]);
     const saved = loadState();
     const state = {
       nGenes: (saved.nGenes >= 1 && saved.nGenes <= 4) ? saved.nGenes : 2,
@@ -150,7 +161,9 @@ export const survivalGroups = {
       selectedScreenDims: Array.isArray(saved.selectedScreenDims) ? saved.selectedScreenDims : [],
       scrScheme: saved.scrScheme === "rb" ? "rb" : "rg",
       scrColorMax: saved.scrColorMax != null ? saved.scrColorMax : 0,
+      endpoint: endpoints.some(ep => ep.id === saved.endpoint) ? saved.endpoint : endpoints[0].id,
     };
+    const currentEndpoint = () => endpoints.find(ep => ep.id === state.endpoint) || endpoints[0];
     const subsetOptions = `<option value="">No clinical subset (all tumors)</option>` +
       dims.map(d => { const [bl, al] = labelsOf(d, assignmentFor(d)); const nm = d.name || d.id; return `<option value="${d.id}|baseline">${nm}: ${bl}</option><option value="${d.id}|advanced">${nm}: ${al}</option>`; }).join("");
     let dragCancer = null, lastSVGName = "km_groups", lastKM = null, scrLastSVGName = "screening";
@@ -158,7 +171,7 @@ export const survivalGroups = {
     container.innerHTML = `
       <div class="card">
         <div class="sg-sec">
-          <div class="sg-intro">Define custom patient groups by combining two genes' high/low levels, then compare survival (OS). Optionally restrict to a clinical subset first (e.g. node-positive only). Pick which signatures go to group A, group B, or are excluded. Each group's n is shown. This is the hypothesis-driven counterpart to the scanning-style Survival tab.</div>
+          <div class="sg-intro">Define custom patient groups by combining two genes' high/low levels, then compare survival (endpoint selectable, default OS). Optionally restrict to a clinical subset first (e.g. node-positive only). Pick which signatures go to group A, group B, or are excluded. Each group's n is shown. This is the hypothesis-driven counterpart to the scanning-style Survival tab.</div>
         </div>
 
         <div class="sg-sec">
@@ -188,6 +201,7 @@ export const survivalGroups = {
         <div class="sg-sec">
           <h3 class="sg-h3">Groups</h3>
           <div class="sg-toolbar">
+            <label class="sg-ctl">Endpoint<select id="sg-endpoint">${endpoints.map(ep => `<option value="${ep.id}">${ep.label}</option>`).join("")}</select></label>
             <label class="sg-ctl">Split<select id="sg-split">
               <option value="median">Median (50/50)</option>
               <option value="tertile">Tertile (top/bottom 1/3)</option>
@@ -202,7 +216,7 @@ export const survivalGroups = {
             <button class="sg-mini" id="sg-p-llrest">All-Low vs rest</button>
           </div>
           <div id="sg-grid" class="sg-grid"></div>
-          <div class="sg-note" style="margin-top:8px">Tumor only · endpoint OS. Signature reads genes in the order entered (with 2 genes, HL = Gene 1 High, Gene 2 Low). With 1 gene it's simply High vs Low.</div>
+          <div class="sg-note" style="margin-top:8px">Tumor only · survival endpoint selectable above. Signature reads genes in the order entered (with 2 genes, HL = Gene 1 High, Gene 2 Low). With 1 gene it's simply High vs Low.</div>
         </div>
 
         <div class="sg-divider"></div>
@@ -260,16 +274,18 @@ export const survivalGroups = {
       </div>`;
 
     const $ = s => container.querySelector(s);
-    const monthsEl = $("#sg-months"), splitSel = $("#sg-split"), subsetSel = $("#sg-subset"), ngenesSel = $("#sg-ngenes"), genesBox = $("#sg-genes"), viewSel = $("#sg-view"), schemeSel = $("#sg-scheme"), cmaxEl = $("#sg-cmax");
+    const monthsEl = $("#sg-months"), splitSel = $("#sg-split"), subsetSel = $("#sg-subset"), ngenesSel = $("#sg-ngenes"), genesBox = $("#sg-genes"), viewSel = $("#sg-view"), schemeSel = $("#sg-scheme"), cmaxEl = $("#sg-cmax"), endpointSel = $("#sg-endpoint");
     const chipBox = $("#sg-cancers"), gridBox = $("#sg-grid"), statusEl = $("#sg-status"), resultEl = $("#sg-result");
     const scrSchemeSel = $("#sg-scr-scheme"), scrCmaxEl = $("#sg-scr-cmax"), screenDimsBox = $("#sg-screen-dims"), scrStatusEl = $("#sg-scr-status"), scrResultEl = $("#sg-scr-result");
     function commit() { saveState(state); }
 
     if (state.months > 0) monthsEl.value = state.months;
+    endpointSel.value = state.endpoint;
     splitSel.value = state.split; subsetSel.value = state.subset; ngenesSel.value = state.nGenes;
     viewSel.value = state.view; schemeSel.value = state.scheme; if (state.colorMax > 0) cmaxEl.value = state.colorMax;
     monthsEl.addEventListener("change", () => { const v = Number(monthsEl.value); state.months = (monthsEl.value === "" || !isFinite(v) || v <= 0) ? 0 : v; commit(); markStale(); });
     splitSel.addEventListener("change", () => { state.split = splitSel.value; commit(); markStale(); });
+    endpointSel.addEventListener("change", () => { state.endpoint = endpointSel.value; commit(); markStale(); });
     subsetSel.addEventListener("change", () => { state.subset = subsetSel.value; commit(); });
     viewSel.addEventListener("change", () => { state.view = viewSel.value; commit(); updateControls(); });
     schemeSel.addEventListener("change", () => { state.scheme = schemeSel.value; commit(); });
@@ -397,9 +413,10 @@ export const survivalGroups = {
     }
     // 病人 → cohort（只留有效 expr + 生存；套月數截斷）
     function buildCohort(patients, geneVals) {
+      const ep = currentEndpoint();
       const cohort = [];
       for (const p of patients) {
-        const os = Number(p.clin["OS"]), t = Number(p.clin["OS.time"]);
+        const os = Number(p.clin[ep.event]), t = Number(p.clin[ep.time]);
         if (!isFinite(os) || !isFinite(t) || t < 0) continue;
         const exprs = geneVals.map(v => v[p.idx]);
         if (exprs.some(x => !isFinite(x))) continue;
@@ -491,7 +508,7 @@ export const survivalGroups = {
         const evA = A.reduce((s, x) => s + x.e, 0), evB = B.reduce((s, x) => s + x.e, 0);
         const discarded = cohort.length - Object.values(counts).reduce((a, b) => a + b, 0);
         const note = document.createElement("div"); note.className = "sg-legend";
-        note.textContent = `${groupLabel("A")}: n=${A.length}, events=${evA} · ${groupLabel("B")}: n=${B.length}, events=${evB}${txt ? ` · subset: ${txt}` : ""} · OS · ${splitLabel(state.split)}${discarded > 0 ? ` · middle dropped: n=${discarded}` : ""}${state.months > 0 ? ` · capped ${state.months} mo` : ""}`;
+        note.textContent = `${groupLabel("A")}: n=${A.length}, events=${evA} · ${groupLabel("B")}: n=${B.length}, events=${evB}${txt ? ` · subset: ${txt}` : ""} · ${currentEndpoint().label} · ${splitLabel(state.split)}${discarded > 0 ? ` · middle dropped: n=${discarded}` : ""}${state.months > 0 ? ` · capped ${state.months} mo` : ""}`;
         resultEl.appendChild(note);
       } else if (state.view === "pooled") {
         // ---- 多癌別 pooled：各癌別內分組、癌別分層的一條 KM ----
@@ -525,7 +542,7 @@ export const survivalGroups = {
       lastKM = { A, B };
       const evA = A.reduce((s, x) => s + x.e, 0), evB = B.reduce((s, x) => s + x.e, 0);
       const note = document.createElement("div"); note.className = "sg-legend";
-      note.textContent = `${groupLabel("A")}: n=${A.length}, events=${evA} · ${groupLabel("B")}: n=${B.length}, events=${evB}${subsetTxt ? ` · subset: ${subsetTxt}` : ""} · pooled ${cancers.length} cancers (cancer-stratified) · OS · ${splitLabel(state.split)}${state.months > 0 ? ` · capped ${state.months} mo` : ""}`;
+      note.textContent = `${groupLabel("A")}: n=${A.length}, events=${evA} · ${groupLabel("B")}: n=${B.length}, events=${evB}${subsetTxt ? ` · subset: ${subsetTxt}` : ""} · pooled ${cancers.length} cancers (cancer-stratified) · ${currentEndpoint().label} · ${splitLabel(state.split)}${state.months > 0 ? ` · capped ${state.months} mo` : ""}`;
       resultEl.appendChild(note);
       return true;
     }

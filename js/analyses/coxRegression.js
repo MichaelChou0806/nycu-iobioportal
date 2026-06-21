@@ -37,6 +37,10 @@ function injectStyles() {
     .cx-sep{width:1px;height:18px;background:var(--line);margin:0 4px}
     .cx-ctl{font-size:11.5px;color:var(--muted)}
     .cx-ctl select,.cx-ctl input{padding:5px 8px;font-size:12px;margin-left:4px}
+    .cx-seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;margin-left:6px}
+    .cx-seg-btn{padding:6px 14px;font-size:12.5px;font-weight:500;background:#fff;color:var(--ink);border:none;border-right:1px solid var(--line);border-radius:0;cursor:pointer}
+    .cx-seg-btn:last-child{border-right:none}
+    .cx-seg-btn.active{background:var(--accent);color:#fff}
     .cx-dims{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
     .cx-dim{display:flex;align-items:center;gap:8px;padding:7px 11px;border:1px solid var(--line);border-radius:6px;font-size:12.5px;cursor:pointer;user-select:none;min-width:0}
     .cx-dim.on{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -125,10 +129,10 @@ export const coxRegression = {
 
         <div class="cx-sec">
           <div class="cx-toolbar">
-            <label class="cx-ctl">Model<select id="cx-model">
-              <option value="uni">Univariate (per factor)</option>
-              <option value="multi">Multivariate (adjusted)</option>
-            </select></label>
+            <span class="cx-ctl" style="display:inline-flex;align-items:center">Model<span class="cx-seg" id="cx-model">
+              <button type="button" class="cx-seg-btn" data-model="uni">Univariate</button>
+              <button type="button" class="cx-seg-btn" data-model="multi">Multivariate</button>
+            </span></span>
             <label class="cx-ctl">Endpoint<select id="cx-endpoint">${endpoints.map(ep => `<option value="${ep.id}">${ep.label}</option>`).join("")}</select></label>
             <label class="cx-ctl">Cancer<select id="cx-cancer" style="min-width:170px">${cancerOpts}</select></label>
             <label class="cx-ctl">Gene split<select id="cx-split">
@@ -165,7 +169,7 @@ export const coxRegression = {
       </div>`;
 
     const $ = s => container.querySelector(s);
-    const genesEl = $("#cx-genes"), cancerSel = $("#cx-cancer"), splitSel = $("#cx-split"), monthsEl = $("#cx-months"), endpointSel = $("#cx-endpoint"), modelSel = $("#cx-model");
+    const genesEl = $("#cx-genes"), cancerSel = $("#cx-cancer"), splitSel = $("#cx-split"), monthsEl = $("#cx-months"), endpointSel = $("#cx-endpoint");
     const dimsBox = $("#cx-dims"), statusEl = $("#cx-status"), resultEl = $("#cx-result");
 
     function commit() { saveState(state); }
@@ -174,7 +178,12 @@ export const coxRegression = {
     genesEl.addEventListener("input", () => setGOIs(parseGenes(genesEl.value)));
     const off = onGOIsChanged(list => { if (document.activeElement !== genesEl) genesEl.value = list.join(", "); });
     // 控制項初值
-    modelSel.value = state.model; endpointSel.value = state.endpoint; cancerSel.value = state.cancer; splitSel.value = state.split; if (state.months > 0) monthsEl.value = state.months;
+    endpointSel.value = state.endpoint; cancerSel.value = state.cancer; splitSel.value = state.split; if (state.months > 0) monthsEl.value = state.months;
+    // Model segmented toggle（取代下拉，更明顯）
+    const modelSeg = $("#cx-model");
+    const setModelActive = () => modelSeg.querySelectorAll(".cx-seg-btn").forEach(b => b.classList.toggle("active", b.dataset.model === state.model));
+    modelSeg.querySelectorAll(".cx-seg-btn").forEach(b => b.addEventListener("click", () => { state.model = b.dataset.model; commit(); setModelActive(); }));
+    setModelActive();
 
     // 依目前癌種計算每個維度的可用性（base/adv 人數），無資料就灰掉並取消勾選
     function renderDims() {
@@ -201,7 +210,6 @@ export const coxRegression = {
       commit();
     }
 
-    modelSel.addEventListener("change", () => { state.model = modelSel.value; commit(); });
     endpointSel.addEventListener("change", () => { state.endpoint = endpointSel.value; commit(); });
     cancerSel.addEventListener("change", () => { state.cancer = cancerSel.value; commit(); renderDims(); });
     splitSel.addEventListener("change", () => { state.split = splitSel.value; commit(); });
