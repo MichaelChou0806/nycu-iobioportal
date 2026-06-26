@@ -67,6 +67,7 @@ function moveInArray(arr, fromId, toId) {
 //  - ordinal（T/Stage/Grade）：依目前每級別歸屬 → 範圍標籤，如 "T1–T3" / "T4"；不連續用逗號 "T1,T2,T4"
 //  - 其他 binary：用定義檔的 label（已改為自明，如 Alcohol- / Alcohol+）
 function labelsOf(dim, assignment) {
+  if (dim.special) return ["Normal", "Tumor"];
   if (dim.type === "binary") {
     if (dim.numericSplit) {
       const c = (assignment && assignment.cutoff != null) ? assignment.cutoff : dim.numericSplit.cutoff;
@@ -105,11 +106,34 @@ export const clinicalOverview = {
     try { DEF = await loadDimensions(dimUrl); }
     catch (e) { container.innerHTML = `<div class="card"><div class="status err">Failed to load dimension definitions: ${e.message}</div></div>`; return; }
     const THR = DEF.warnThresholds || { minPerGroup: 10, maxRatio: 10 };
-    const dimById = Object.fromEntries(DEF.dimensions.map(d => [d.id, d]));
-    const avail = { cancers: dataset.cancers.map(c => c.code), dimIds: DEF.dimensions.map(d => d.id) };
+    // Tumor vs Normal 是「sample_class 軸」（非臨床維度）→ 用合成特殊維度，放最前、預設選取
+    const TVN = { id: "_tvn", name: "Tumor vs Normal", special: true };
+    const allDims = [TVN, ...DEF.dimensions];
+    const dimById = Object.fromEntries(allDims.map(d => [d.id, d]));
+    const avail = { cancers: dataset.cancers.map(c => c.code), dimIds: allDims.map(d => d.id) };
     const nTumorOf = Object.fromEntries(dataset.cancers.map(c => [c.code, c.n_tumor]));
+    const hasNormalOf = Object.fromEntries(dataset.cancers.map(c => [c.code, (c.n_normal || 0) > 0]));
+    // 依 cancer + sample_class 分 normal(base) / tumor(adv)；每病人每類去重、排除 redaction
+    function tvnBuckets(cancers) {
+      const per = {};
+      cancers.forEach(c => per[c] = { base: [], adv: [], nField: 0, _sn: new Set(), _st: new Set() });
+      for (let i = 0; i < dataset.samples.length; i++) {
+        const s = dataset.samples[i], cc = per[s.cancer]; if (!cc) continue;
+        const cl = dataset.clinical.get(s.patient_id);
+        if (cl && cl.redaction && String(cl.redaction).trim() !== "") continue;
+        if (s.sample_class === "tumor") { if (cc._st.has(s.patient_id)) continue; cc._st.add(s.patient_id); cc.adv.push(i); cc.nField++; }
+        else if (s.sample_class === "normal") { if (cc._sn.has(s.patient_id)) continue; cc._sn.add(s.patient_id); cc.base.push(i); cc.nField++; }
+      }
+      return per;
+    }
 
-    let state = reconcile(loadLast(), avail);
+    const _saved = loadLast();
+    let state = reconcile(_saved, avail);
+    if (!(_saved && _saved._tvnSeen)) {   // 首次出現 Tumor vs Normal → 放第一、預設勾選
+      state.dimensions = ["_tvn", ...state.dimensions.filter(id => id !== "_tvn")];
+      if (!state.selectedDims.includes("_tvn")) state.selectedDims = ["_tvn", ...state.selectedDims];
+    }
+    state._tvnSeen = true;
     const _shared = getGOIs();
     if (_shared.length) state.genes = _shared; else if (state.genes.length) setGOIs(state.genes);
     let dragCancer = null, dragDim = null;
@@ -274,10 +298,20 @@ export const clinicalOverview = {
     // ---------- 即時覆蓋/人數/黃旗 ----------
     function recompute() {
       const patients = state.selectedCancers.length ? patientsInScope(dataset, state.selectedCancers) : [];
-      DEF.dimensions.forEach(dim => {
+      allDims.forEach(dim => {
         const row = dimsBox.querySelector(`.co-dim[data-id="${dim.id}"]`); if (!row) return;
         const covEl = $(`#cov-${dim.id}`), cntEl = $(`#cnt-${dim.id}`), warnEl = $(`#warn-${dim.id}`), mapEl = $(`#map-${dim.id}`);
         const onBox = row.querySelector(".co-on");
+        if (dim.special) {   // Tumor vs Normal：用 sample_class 算覆蓋（無 normal 的癌種不計）
+          mapEl.classList.add("hidden"); warnEl.classList.add("hidden");
+          const withN = state.selectedCancers.filter(c => hasNormalOf[c]);
+          if (!withN.length) { row.classList.add("off"); onBox.checked = false; onBox.disabled = true; state.selectedDims = state.selectedDims.filter(x => x !== dim.id); covEl.innerHTML = `<span class="co-disabled">no normal in selection</span>`; cntEl.textContent = ""; return; }
+          row.classList.remove("off"); onBox.disabled = false;
+          const per = tvnBuckets(withN); let nN = 0, nT = 0; withN.forEach(c => { nN += per[c].base.length; nT += per[c].adv.length; });
+          covEl.textContent = `${withN.length} cancer(s) with normal`;
+          cntEl.textContent = `Normal=${nN} / Tumor=${nT}`;
+          return;
+        }
         if (!patients.length) { covEl.textContent = "—"; cntEl.textContent = ""; warnEl.classList.add("hidden"); mapEl.classList.add("hidden"); return; }
         const r = analyzeDimension(dim, patients, assignmentOf(dim));
         if (r.nField === 0) {
@@ -416,13 +450,17 @@ export const clinicalOverview = {
     // ---------- 計算：展開（列=基因、欄=癌種、色=log2FC）----------
     function computeExpanded(D, cancers, recs, geneVals, patients) {
       const a = assignmentOf(D);
-      // 每癌種先把病人分桶（只做一次）
-      const per = {}; cancers.forEach(c => per[c] = { base: [], adv: [], nField: 0 });
-      patients.forEach(p => {
-        const cc = per[p.cancer]; if (!cc) return;
-        const raw = p.clin[D.field]; if (raw != null && String(raw).trim() !== "") cc.nField++;
-        const b = classify(D, raw, a); if (b === "baseline") cc.base.push(p.idx); else if (b === "advanced") cc.adv.push(p.idx);
-      });
+      // 每癌種先把樣本分桶（特殊維度走 sample_class，其餘走病人臨床分組）
+      let per;
+      if (D.special) per = tvnBuckets(cancers);
+      else {
+        per = {}; cancers.forEach(c => per[c] = { base: [], adv: [], nField: 0 });
+        patients.forEach(p => {
+          const cc = per[p.cancer]; if (!cc) return;
+          const raw = p.clin[D.field]; if (raw != null && String(raw).trim() !== "") cc.nField++;
+          const b = classify(D, raw, a); if (b === "baseline") cc.base.push(p.idx); else if (b === "advanced") cc.adv.push(p.idx);
+        });
+      }
       const rows = recs.map(r => r.label), cols = cancers;
       const cells = []; const pflat = []; const table = [];
       recs.forEach((r, ri) => {
@@ -455,7 +493,7 @@ export const clinicalOverview = {
       const colorMax = robustMax(cells, 4);
       return {
         rows, cols, cells, colorMax, legendLabel: "log2 FC",
-        caption: `${D.name}: ${lbl[1]} vs ${lbl[0]} — log2FC across cancers`,
+        caption: D.special ? `${D.name} — log2FC across cancers` : `${D.name}: ${lbl[1]} vs ${lbl[0]} — log2FC across cancers`,
         table: { mode: "expanded", dim: D.name, baseLabel: lbl[0], advLabel: lbl[1], rows: tableWithQ(table, cells, rows, cols) },
         singleBar: null,
       };
@@ -469,13 +507,17 @@ export const clinicalOverview = {
       const cells = []; const table = [];
       dims.forEach((D) => {
         const a = assignmentOf(D);
-        // 該維度下、各癌種先分桶
-        const per = {}; cancers.forEach(c => per[c] = { base: [], adv: [], nField: 0 });
-        patients.forEach(p => {
-          const cc = per[p.cancer]; if (!cc) return;
-          const raw = p.clin[D.field]; if (raw != null && String(raw).trim() !== "") cc.nField++;
-          const b = classify(D, raw, a); if (b === "baseline") cc.base.push(p.idx); else if (b === "advanced") cc.adv.push(p.idx);
-        });
+        // 該維度下、各癌種先分桶（特殊維度走 sample_class）
+        let per;
+        if (D.special) per = tvnBuckets(cancers);
+        else {
+          per = {}; cancers.forEach(c => per[c] = { base: [], adv: [], nField: 0 });
+          patients.forEach(p => {
+            const cc = per[p.cancer]; if (!cc) return;
+            const raw = p.clin[D.field]; if (raw != null && String(raw).trim() !== "") cc.nField++;
+            const b = classify(D, raw, a); if (b === "baseline") cc.base.push(p.idx); else if (b === "advanced") cc.adv.push(p.idx);
+          });
+        }
         const lbl = labelsOf(D, assignmentOf(D));
         const rowCells = []; const pRow = [];
         cancers.forEach((c, ci) => {
@@ -529,9 +571,15 @@ export const clinicalOverview = {
       });
       // 分桶（只做一次）
       patients.forEach(p => dims.forEach(D => {
+        if (D.special) return;
         const b = classify(D, p.clin[D.field], assignmentOf(D));
         if (b) colKey[D.id + "|" + b].idx.push(p.idx);
       }));
+      // Tumor vs Normal 特殊維度：用 sample_class 填欄（跨選取癌種合併）
+      dims.filter(d => d.special).forEach(D => {
+        const per = tvnBuckets(cancers);
+        cancers.forEach(c => { colKey[D.id + "|baseline"].idx.push(...per[c].base); colKey[D.id + "|advanced"].idx.push(...per[c].adv); });
+      });
 
       const rows = recs.map(r => r.label);
       const cells = []; const table = [];
