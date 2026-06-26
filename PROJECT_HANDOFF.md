@@ -26,13 +26,14 @@
 - 使用者：HNSC / OSCC 研究者 @ NYCU
 - **最終目標**：把實驗室自己的 **OSCC RNA-seq 資料**接進來，做出可發表的研究分析
 
-**目前有 6 個分析分頁**（app.js `ANALYSES` 順序）：
+**目前有 7 個分析分頁**（app.js `ANALYSES` 順序）：
 1. **Clinical Overview** — 多基因 × 多癌別 × 多臨床維度的表現總覽
 2. **Survival (KM)** — 單/多基因高低分組的生存（基礎、掃描式）
 3. **Advanced Survival** — 多基因組合分組 + 臨床 subset + 亞組 screening 的生存（進階、假設驗證式）
 4. **Cox Regression** — univariate / multivariate Cox（基因 + 臨床因子的 HR forest plot；OS/DSS/DFI/PFI endpoint）
 5. **Immune Correlation** — 基因表現 × 免疫浸潤相關
-6. **Group Comparison** — 基因表現在臨床兩組間的差異（最早的原型）
+6. **Gene Correlation** — GOI 之間兩兩表現相關（scatter / 上三角矩陣 / 跨癌種；含 miRNA）
+7. **Group Comparison** — 基因表現在臨床兩組間的差異（最早的原型）
 
 ---
 
@@ -65,6 +66,14 @@
 - `clinical_final.csv.gz` — 11,160 病人；有 `OS, OS.time(天), DSS, PFI, node_status, stage` 等；**無 HPV / ENE**
 - `immune_scores.csv.gz` — 列=cell_type、值沿樣本軸（未匹配→空白）
 - `immune_manifest.json` — cell_types 清單 ＋ method 分組
+
+**miRNA assay（已上傳，偽基因形式）**
+- `expr/mir/<MIMAT>.csv.gz` — 每個成熟 miRNA 一檔（檔名=MIMAT accession，對齊 gene 用 ENSG 的慣例），
+  shard="mir"；值=`round(RPM*1000)`、缺值空欄、對齊 samples.csv（與 gene 檔位元組相容）
+- `mirna_index.json.gz` — 與 gene_index 同形狀（by_ensembl 用 MIMAT、by_symbol 用大寫名）；
+  前端 `load()` 併入 geneIndex → 成熟體可像基因一樣被 GOI 搜尋（打 `hsa-miR-21-5p`）
+- `mirna_manifest.json` — assay=mirna_rpm、value_scale=1000、file_key=MIMAT
+- **前端整合已完成**（2026-06-27）：`dataset.js` `load()` 併入 `mirna_index`、`getGeneValues` 空欄→NaN；`clinicalOverview`/`groupCompare` 統計前丟 NaN + GOI 是 miRNA 時標 RPM；其餘 GOI 模組本來就 `isFinite` 濾值。對線上 R2 抽 `hsa-miR-21-5p`（MIMAT0000076）驗過 resolve/對齊/scale/NaN。通用格式標準 → `R2_DATASET_FORMAT.md`
 
 **免疫資料細節**（TIMER2.0）：119 種 cell type，分 7 法（TIMER 6 / CIBERSORT 22 / CIBERSORT-ABS 22 / QUANTISEQ 11 / MCPCOUNTER 11 / XCELL 39 / EPIC 8）。對齊率 97.5%（11,089/11,370，未匹配多為 normal，TIMER 只有 tumor）。對齊靠 `barcode15 = str(sample_id)[:15]`。
 
@@ -102,17 +111,18 @@ js/analyses/    各分析（一檔一個，自給自足）
   survivalGroups    Advanced Survival
   coxRegression     Cox Regression ← univariate / multivariate Cox（forest plot）← 最近開發
   immuneCorr        Immune Correlation
+  correlation       Gene Correlation ← GOI 兩兩相關（矩陣 / scatter / 跨癌種）
   groupCompare      Group Comparison
 
 app.js          薄殼：ANALYSES 陣列註冊、切頁（HIDE 不銷毀）；分頁名稱用 module 的 .name 自動顯示
 ```
 
-**註冊順序**（app.js ANALYSES）：`[clinicalOverview, survival, survivalGroups, coxRegression, immuneCorr, groupCompare]`
+**註冊順序**（app.js ANALYSES）：`[clinicalOverview, survival, survivalGroups, coxRegression, immuneCorr, correlation, groupCompare]`
 **config/**：`datasets.json`（資料來源，含 R2 baseUrl）、`dimensions.tcga.json`（12 個臨床維度）
 
 ---
 
-## 6. 六個分析模組
+## 6. 七個分析模組
 
 ### ① Clinical Overview (`clinicalOverview.js`, ~625 行)
 多基因 × 多癌別 × 多臨床維度總覽。log2FC / row z-score heatmap、Expanded/Condensed 模式、ordinal 維度的 baseline/advanced 逐級別選擇器、FDR。維度勾選 UI（**Advanced Survival 的 screening 維度選擇就是仿這個**）。**基因清單跨分析共享**。
@@ -160,6 +170,14 @@ KM 生存（OS、tumor-only）。基礎、掃描式（單基因 pan-cancer）。
 - **目前限制**：用現有 11 個臨床維度（去 vital）；全是二元，尚未做多級類別 dummy。**待擴充**：數百項臨床 factor + 可搜尋 picker（見 `CLINICAL_TABLE_SPEC.md`）
 - 曾加 VIF 共線性診斷後**移除**：二元因子 VIF 天生偏溫和、幾乎都顯示 low overlap 反而誤導（教訓：二元因子別用 VIF）
 
+### ⑦ Gene Correlation (`correlation.js`)
+GOI 之間兩兩表現相關（Spearman 預設 / Pearson）、tumor-only、**per-cancer 不 pooling**。骨架仿 immuneCorr。
+- **路由（GOI 數 × 癌種數）**：2 基因×1 癌種 → **scatter**（回歸 + 95% 信賴帶 + 上/右邊緣 histogram）；2 基因×多癌種 → **1-D**（r across cancers，heatmap/bar）；>2 基因×1 癌種 → **上三角相關矩陣**（`corrMatrixSVG`，下三角+對角留白；**點上三角格子 → 該對 scatter** 顯示在下方）；>2 基因×多癌種 → 提示收一軸（高維無法一圖）
+- **pairwise-complete**：每一對各自丟 NaN 取交集（miRNA 缺值樣本）→ 每格 n 可能不同
+- **色階固定 ±1，可手動調**（`Color max`；TCGA r 普遍低，調 0.3/0.5 放大對比）；scheme rb（r>0 紅、r<0 藍）
+- **含 miRNA**：偽基因自動可入；Spearman rank-based 讓 RPM×TPM 混合也合理；scatter 軸各標 RPM/TPM。FDR（矩陣跨所有對、1-D 跨癌種）。匯出 SVG/PNG。localStorage `tcga-tool:corr`
+- **未來**：Advanced Correlation（臨床 subset 後的相關，如 Advanced Survival 那樣）— 使用者規劃中
+
 ---
 
 ## 7. 統計方法 (`stats.js`, ~279 行，全部用獨立計算交叉驗證過)
@@ -180,7 +198,11 @@ KM 生存（OS、tumor-only）。基礎、掃描式（單基因 pan-cancer）。
 
 ## 8. 繪圖層 (`plots.js`, ~319 行)
 
-函數：`scatterSVG, barSVG, heatmapSVG, multiBarSVG, kmCurveSVG, corrScatterSVG, corrBarSVG, forestSVG`（forestSVG＝橫向 forest：log-scale HR 軸、HR=1 參考線、三態）
+函數：`scatterSVG, barSVG, heatmapSVG, multiBarSVG, kmCurveSVG, corrScatterSVG, corrBarSVG, forestSVG, corrMatrixSVG`
+- `forestSVG`＝橫向 forest：log-scale HR 軸、HR=1 參考線、三態
+- `kmCurveSVG`：curves 帶 `times[]` 時在 x 軸下方畫 number-at-risk 表（純加法，gated）
+- `corrScatterSVG`：`opts.band`＝95% 回歸信賴帶、`opts.marginals`＝上/右邊緣 histogram（都 gated，immuneCorr 不傳→行為不變）
+- `corrMatrixSVG`：上三角相關矩陣，下三角+對角留白；上三角格子帶 `class="corr-cell" data-i/data-j`（呼叫端委派點擊）；色階固定 ±colorMax
 
 **關鍵技術點（踩過坑、別退回去）**：
 
@@ -237,6 +259,11 @@ KM 生存（OS、tumor-only）。基礎、掃描式（單基因 pan-cancer）。
 - [ ] **ROC / 時間依賴 ROC**（基因當 predictor）
 - [ ] **Logistic regression**
 
+### 相關分析
+- [x] ~~**Gene Correlation 分頁**~~（**已完成 2026-06-27**）：GOI 兩兩表現相關，scatter（信賴帶+邊緣分布）/ 上三角矩陣（可點→scatter）/ 跨癌種；per-cancer 不 pooling、pairwise-complete；含 miRNA。新增 `corrMatrixSVG`、`corrScatterSVG` 加 band+marginals
+- [ ] **Advanced Correlation**：臨床 subset 後的相關（如 Advanced Survival 那樣先篩臨床再算 r）— 使用者規劃中，稍後做
+- [x] ~~**miRNA 成熟體前端整合**~~（**已完成 2026-06-27**）：成熟體以偽基因形式入 GOI（見 §3）
+
 ### OSCC 資料接入（最終目標）
 - [ ] OSCC RNA-seq 做成相同格式（per-gene、clinical、自跑免疫 deconvolution）
 - [ ] `datasets.json` 加一條 ＋ OSCC 專屬 `dimensions`（補 ENE）
@@ -248,6 +275,9 @@ KM 生存（OS、tumor-only）。基礎、掃描式（單基因 pan-cancer）。
 - [ ] Group Comparison 是否擴展（用所有 dimensions）或與 Clinical Overview 整合（見 §6⑤）
 - [ ] 生存模組若干小 bug（使用者提過，未指明）
 - [ ] （未來）雲端命名清單：改 `state.js` 的 saveNamed/loadNamed 接 Cloudflare KV（建議 share-code 而非密碼）
+
+### miRNA 分析
+-  [  ] miRNA 整合進 GOI 系統（資料已上傳，見 MIRNA_INTEGRATION_BRIEF.md）
 
 ---
 

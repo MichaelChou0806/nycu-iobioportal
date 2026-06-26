@@ -12,6 +12,7 @@ import { survival } from "./analyses/survival.js";
 import { survivalGroups } from "./analyses/survivalGroups.js";
 import { coxRegression } from "./analyses/coxRegression.js";
 import { immuneCorr } from "./analyses/immuneCorr.js";
+import { correlation } from "./analyses/correlation.js";
 import { groupCompare } from "./analyses/groupCompare.js";
 
 // 分析註冊表：新增分析 = import 進來 + 在這裡加一行
@@ -21,6 +22,7 @@ const ANALYSES = [
   survivalGroups,
   coxRegression,
   immuneCorr,
+  correlation,
   groupCompare,
 ];
 

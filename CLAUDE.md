@@ -6,8 +6,8 @@
 純前端、免安裝的 **TCGA pan-cancer 基因表現 + 免疫 + 生存分析工具**，給 HNSC/OSCC 研究者用。所有運算在瀏覽器內，資料檔放 Cloudflare R2，零後端。最終目標：接入實驗室自己的 OSCC RNA-seq cohort。
 線上版：https://nycu-iobioportal.pages.dev/
 
-6 個分析分頁（`js/analyses/`，於 `app.js` ANALYSES 註冊）：
-Clinical Overview · Survival (KM) · Advanced Survival · Cox Regression · Immune Correlation · Group Comparison
+7 個分析分頁（`js/analyses/`，於 `app.js` ANALYSES 註冊）：
+Clinical Overview · Survival (KM) · Advanced Survival · Cox Regression · Immune Correlation · Gene Correlation · Group Comparison
 
 ## 不可違反的硬規則
 1. **語言**：程式顯示內容（UI 文字、圖表、匯出檔、錯誤訊息）一律**英文**（投稿用）；程式碼**註解用繁體中文**；與使用者**溝通用繁體中文**。
@@ -52,7 +52,8 @@ js/core/dataset.js             Dataset：resolveGene、getGeneValues(對齊/除s
 js/core/stats.js               mannWhitney/median/sd/pStars/log2FC/benjaminiHochberg/zscoreRow、
                                kaplanMeier/logRank/logRankStratified/coxPH1/coxPH1Stratified、
                                coxPH(多共變量)/chiSquareP、pearsonr/spearmanr
-js/core/plots.js               scatterSVG/barSVG/heatmapSVG(三態+星號)/multiBarSVG/kmCurveSVG/corrScatterSVG/corrBarSVG/forestSVG
+js/core/plots.js               scatterSVG/barSVG/heatmapSVG(三態+星號)/multiBarSVG/kmCurveSVG(含at-risk表)/
+                               corrScatterSVG(可+band/marginals)/corrBarSVG/forestSVG/corrMatrixSVG(上三角,可點)
 js/core/dimensions.js          loadDimensions、patientsInScope(tumor/去重/排除redaction)、classify(binary/numericSplit/ordinal)
 js/core/state.js               saveLast/loadLast、saveNamed/loadNamed/listNames、export/importState、reconcile(版本寬容)
 js/core/gois.js                跨分析共用基因清單（localStorage + window 'gois-changed'）
@@ -61,12 +62,13 @@ js/analyses/survival.js          Survival (KM)：單/多基因高低分組生存
 js/analyses/survivalGroups.js    Advanced Survival：組合分組 + 臨床 subset + 亞組 screening
 js/analyses/coxRegression.js     Cox Regression：univariate/multivariate Cox（基因+臨床因子 HR forest、OS/DSS/DFI/PFI endpoint）
 js/analyses/immuneCorr.js        基因 × 免疫浸潤相關（per-cancer、三件式 cell 篩選、維度選擇器）
+js/analyses/correlation.js       Gene Correlation：GOI 兩兩相關（scatter/上三角矩陣/跨癌種、per-cancer、含 miRNA）
 js/analyses/groupCompare.js      最早原型：單基因×單癌種、表現在臨床兩組差異（Mann–Whitney）
 config/datasets.json           資料來源（含 R2 baseUrl）；OSCC 加一筆即可
 config/dimensions.tcga.json    12 個臨床維度（切法/級別指派都在此）
 ```
 
 ## 目前狀態與路線圖
-- 資料管線、R2、6 個分析模組：**完成**（前 5 個已上線；Cox Regression 為本機新加，尚未部署）。
-- **Cox 回歸（uni/multivariate）已完成 v1**（用現有 11 個臨床維度）。接下來（詳見 PROJECT_HANDOFF.md §12）：擴充臨床 factor（數百項 + 可搜尋 picker，見 `CLINICAL_TABLE_SPEC.md`）→ ROC → **OSCC cohort 接入（最終目標）**。
+- 資料管線、R2、7 個分析模組：**完成**（Cox Regression / Gene Correlation 為本機新加，部署狀態看 git）。
+- **Cox 回歸（uni/multivariate）、Gene Correlation、miRNA 成熟體前端整合 已完成**。接下來（詳見 PROJECT_HANDOFF.md §12）：Advanced Correlation（臨床 subset 後相關）、擴充臨床 factor（picker，見 `CLINICAL_TABLE_SPEC.md`）→ ROC → **OSCC cohort 接入（最終目標）**。
 - OSCC 接入注意：batch effect（最大風險，ComBat）、小樣本 power（~100+30）、`build_immune.py` 設 `KEY_MODE="exact"`、補 ENE 維度。

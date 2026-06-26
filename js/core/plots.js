@@ -228,6 +228,12 @@ export function kmCurveSVG(curves, opts) {
 // points=[{x,y}]，opts={xLabel,yLabel,r,pText,n,caption}
 // =====================================================================
 function fmtAxis(v) { const a = Math.abs(v); return a >= 100 ? v.toFixed(0) : a >= 1 ? v.toFixed(1) : a >= 0.01 ? v.toFixed(3) : v.toExponential(1); }
+// 把 hex 顏色加深（每通道 × f）→ 給散點外框用
+function darken(hex, f) {
+  let h = String(hex).replace("#", ""); if (h.length === 3) h = h.split("").map(c => c + c).join("");
+  const r = Math.round(parseInt(h.slice(0, 2), 16) * f), g = Math.round(parseInt(h.slice(2, 4), 16) * f), b = Math.round(parseInt(h.slice(4, 6), 16) * f);
+  return `rgb(${r},${g},${b})`;
+}
 // 標題折行：超過 maxChars 就斷到下一行（置中、字級不變、不撐寬畫布）
 function wrapText(text, maxChars) {
   text = String(text);
@@ -244,36 +250,69 @@ function fmtTick(v) { return Math.abs(v) < 1e-9 ? "0" : v.toFixed(2).replace(/0+
 
 export function corrScatterSVG(points, opts) {
   const L = 64, R = 18, B = 64, plotW = 460, plotH = 340;
-  const W = L + plotW + R;
+  const mT = opts.marginals ? 52 : 0, mR = opts.marginals ? 52 : 0;   // 邊緣分布留白（gated；immuneCorr 不傳→0，行為不變）
+  const W = L + plotW + R + mR;
   const _mc = Math.max(8, Math.floor((W - 16) / 7.5));
   const titleLines = opts.title ? String(opts.title).split("\n").flatMap(seg => wrapText(seg, _mc)) : [];
   const T = Math.max(40, titleLines.length * 18 + (opts.subtitle ? 18 : 0) + 12);
-  const H = T + plotH + B;
-  const xs = points.map(p => p.x), ys = points.map(p => p.y);
-  const xMin = Math.min(...xs), xMax = Math.max(...xs), yMin = Math.min(...ys), yMax = Math.max(...ys);
-  const xPad = (xMax - xMin) * 0.05 || 1, yPad = (yMax - yMin) * 0.05 || 1;
-  const x0 = xMin - xPad, x1 = xMax + xPad, y0 = yMin - yPad, y1 = yMax + yPad;
+  const PT = T + mT;                                                  // 繪圖區頂端（含上邊緣分布）
+  const H = PT + plotH + B;
+  const rawX = points.map(p => p.x), rawY = points.map(p => p.y);
+  // 軸範圍：有明確界限就用界限（超界點夾到界限，避免端值撐爛圖）；否則自動 + 5% 餘裕
+  let x0, x1, y0, y1;
+  if (opts.xMin != null && opts.xMax != null && opts.xMax > opts.xMin) { x0 = opts.xMin; x1 = opts.xMax; }
+  else { const a = Math.min(...rawX), b = Math.max(...rawX), pad = (b - a) * 0.05 || 1; x0 = a - pad; x1 = b + pad; }
+  if (opts.yMin != null && opts.yMax != null && opts.yMax > opts.yMin) { y0 = opts.yMin; y1 = opts.yMax; }
+  else { const a = Math.min(...rawY), b = Math.max(...rawY), pad = (b - a) * 0.05 || 1; y0 = a - pad; y1 = b + pad; }
+  const xs = rawX, ys = rawY;                                      // marginals histogram 用原始值
+  const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
   const sx = v => L + (v - x0) / (x1 - x0) * plotW;
-  const sy = v => T + plotH - (v - y0) / (y1 - y0) * plotH;
+  const sy = v => PT + plotH - (v - y0) / (y1 - y0) * plotH;
+  const uid = "s" + Math.random().toString(36).slice(2, 8);
+  const hasStyle = opts.pointColor != null || opts.pointOpacity != null;   // 有給樣式才加外框（immuneCorr 不給→維持原樣）
+  const ptColor = opts.pointColor || "#3b82f6", ptOpacity = opts.pointOpacity != null ? opts.pointOpacity : 0.45;
+  const ptStroke = hasStyle ? darken(ptColor, 0.7) : null, ptStrokeOp = Math.min(1, Math.round((ptOpacity + 0.35) * 100) / 100);
   let s = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:auto" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">`;
+  s += `<defs><clipPath id="${uid}"><rect x="${L}" y="${PT}" width="${plotW}" height="${plotH}"/></clipPath></defs>`;
   titleLines.forEach((ln, i) => s += `<text x="${W / 2}" y="${20 + i * 18}" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2733">${ln}</text>`);
   if (opts.subtitle) s += `<text x="${W / 2}" y="${20 + titleLines.length * 18}" text-anchor="middle" font-size="12" fill="#6b7480">${opts.subtitle}</text>`;
-  s += `<line x1="${L}" y1="${T}" x2="${L}" y2="${T + plotH}" stroke="#c9ced6"/><line x1="${L}" y1="${T + plotH}" x2="${L + plotW}" y2="${T + plotH}" stroke="#c9ced6"/>`;
+  s += `<line x1="${L}" y1="${PT}" x2="${L}" y2="${PT + plotH}" stroke="#c9ced6"/><line x1="${L}" y1="${PT + plotH}" x2="${L + plotW}" y2="${PT + plotH}" stroke="#c9ced6"/>`;
   for (let k = 0; k <= 5; k++) {
     const yv = y0 + (y1 - y0) * k / 5, y = sy(yv);
     s += `<line x1="${L - 4}" y1="${y}" x2="${L}" y2="${y}" stroke="#c9ced6"/><text x="${L - 7}" y="${y + 4}" text-anchor="end" font-size="10" fill="#6b7480">${fmtAxis(yv)}</text>`;
     const xv = x0 + (x1 - x0) * k / 5, x = sx(xv);
-    s += `<line x1="${x}" y1="${T + plotH}" x2="${x}" y2="${T + plotH + 4}" stroke="#c9ced6"/><text x="${x}" y="${T + plotH + 16}" text-anchor="middle" font-size="10" fill="#6b7480">${fmtAxis(xv)}</text>`;
+    s += `<line x1="${x}" y1="${PT + plotH}" x2="${x}" y2="${PT + plotH + 4}" stroke="#c9ced6"/><text x="${x}" y="${PT + plotH + 16}" text-anchor="middle" font-size="10" fill="#6b7480">${fmtAxis(xv)}</text>`;
   }
-  s += `<text x="18" y="${T + plotH / 2}" transform="rotate(-90 18 ${T + plotH / 2})" text-anchor="middle" font-size="11" fill="#6b7480">${opts.yLabel || "Gene expression"}</text>`;
-  s += `<text x="${L + plotW / 2}" y="${T + plotH + 34}" text-anchor="middle" font-size="11" fill="#6b7480">${opts.xLabel || "Immune score"}</text>`;
-  points.forEach(p => { s += `<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="2.6" fill="#3b82f6" fill-opacity="0.45"/>`; });
+  s += `<text x="18" y="${PT + plotH / 2}" transform="rotate(-90 18 ${PT + plotH / 2})" text-anchor="middle" font-size="11" fill="#6b7480">${opts.yLabel || "Gene expression"}</text>`;
+  s += `<text x="${L + plotW / 2}" y="${PT + plotH + 34}" text-anchor="middle" font-size="11" fill="#6b7480">${opts.xLabel || "Immune score"}</text>`;
+  // 線性回歸（band 也要用）
   const n = points.length; let mx = 0, my = 0; for (const p of points) { mx += p.x; my += p.y; } mx /= n; my /= n;
   let num = 0, den = 0; for (const p of points) { num += (p.x - mx) * (p.y - my); den += (p.x - mx) ** 2; }
-  if (den > 0) { const slope = num / den, intercept = my - slope * mx;
-    s += `<line x1="${sx(x0)}" y1="${sy(slope * x0 + intercept)}" x2="${sx(x1)}" y2="${sy(slope * x1 + intercept)}" stroke="#ef4444" stroke-width="2"/>`;
+  const slope = den > 0 ? num / den : 0, intercept = my - slope * mx;
+  s += `<g clip-path="url(#${uid})">`;                             // band / 點 / 回歸線都裁切在繪圖區內（界限收緊時不溢出）
+  // 95% 信賴帶（gated）：ŷ ± 1.96·s·sqrt(1/n + (x-x̄)²/Sxx)
+  if (opts.band && den > 0 && n > 2) {
+    let sse = 0; for (const p of points) { const e = p.y - (slope * p.x + intercept); sse += e * e; }
+    const sRes = Math.sqrt(sse / (n - 2)); const steps = 40; const up = [], lo = [];
+    for (let k = 0; k <= steps; k++) { const xv = x0 + (x1 - x0) * k / steps, yhat = slope * xv + intercept, seM = sRes * Math.sqrt(1 / n + (xv - mx) ** 2 / den); up.push([sx(xv), sy(yhat + 1.96 * seM)]); lo.push([sx(xv), sy(yhat - 1.96 * seM)]); }
+    const d = "M " + up.map(p => p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" L ") + " L " + lo.reverse().map(p => p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" L ") + " Z";
+    s += `<path d="${d}" fill="#ef4444" fill-opacity="0.12" stroke="none"/>`;
   }
-  s += `<text x="${L + plotW - 6}" y="${T + 14}" text-anchor="end" font-size="11" fill="#1f2733">r = ${opts.r.toFixed(3)},  p ${opts.pText},  n = ${opts.n}</text>`;
+  points.forEach(p => { s += `<circle cx="${sx(clamp(p.x, x0, x1)).toFixed(1)}" cy="${sy(clamp(p.y, y0, y1)).toFixed(1)}" r="2.6" fill="${ptColor}" fill-opacity="${ptOpacity}"${ptStroke ? ` stroke="${ptStroke}" stroke-opacity="${ptStrokeOp}" stroke-width="0.7"` : ""}/>`; });
+  if (den > 0) s += `<line x1="${sx(x0)}" y1="${sy(slope * x0 + intercept)}" x2="${sx(x1)}" y2="${sy(slope * x1 + intercept)}" stroke="#ef4444" stroke-width="2"/>`;
+  s += `</g>`;
+  // 邊緣分布 histogram（gated）：上=x、右=y
+  if (opts.marginals) {
+    const bins = 24;
+    const hist = (arr, lo, hi) => { const h = new Array(bins).fill(0); const w = (hi - lo) / bins || 1; arr.forEach(v => { let b = Math.floor((v - lo) / w); if (b < 0) b = 0; if (b >= bins) b = bins - 1; h[b]++; }); return h; };
+    const hx = hist(xs, x0, x1), hy = hist(ys, y0, y1), hxM = Math.max(1, ...hx), hyM = Math.max(1, ...hy);
+    const sT = T + 4, sH = mT - 8;
+    for (let b = 0; b < bins; b++) { const xa = sx(x0 + (x1 - x0) * b / bins), xb = sx(x0 + (x1 - x0) * (b + 1) / bins), hh = hx[b] / hxM * sH; s += `<rect x="${xa.toFixed(1)}" y="${(sT + sH - hh).toFixed(1)}" width="${Math.max(0.5, xb - xa - 1).toFixed(1)}" height="${hh.toFixed(1)}" fill="#93c5fd"/>`; }
+    const sL = L + plotW + 6, sW = mR - 10;
+    for (let b = 0; b < bins; b++) { const ya = sy(y0 + (y1 - y0) * b / bins), yb = sy(y0 + (y1 - y0) * (b + 1) / bins), ww = hy[b] / hyM * sW; s += `<rect x="${sL}" y="${Math.min(ya, yb).toFixed(1)}" width="${ww.toFixed(1)}" height="${Math.max(0.5, Math.abs(ya - yb) - 1).toFixed(1)}" fill="#93c5fd"/>`; }
+  }
+  const lblTR = opts.labelPos !== "tl";   // r/p/n 標示：預設右上；正相關會擋點時可選左上
+  s += `<text x="${lblTR ? L + plotW - 6 : L + 6}" y="${PT + 14}" text-anchor="${lblTR ? "end" : "start"}" font-size="11" fill="#1f2733">r = ${opts.r.toFixed(3)},  p ${opts.pText},  n = ${opts.n}</text>`;
   s += `</svg>`;
   return s;
 }
@@ -411,3 +450,53 @@ export function forestSVG(items, opts = {}) {
 }
 // HR 數值格式：大值少小數、極小值科學記號
 function fmtHR(v) { if (!isFinite(v)) return "n/a"; const a = Math.abs(v); return a >= 100 ? v.toFixed(0) : a >= 10 ? v.toFixed(1) : a >= 0.1 ? v.toFixed(2) : a >= 0.01 ? v.toFixed(3) : v.toExponential(1); }
+
+// =====================================================================
+// 相關矩陣（上三角）：對稱矩陣只畫 j>i 的格子，下三角與對角留白。
+// labels=[基因名]；cells[i][j]={value(r), state:"ok"|"weak"|"nodata", stars, tip}（只需上三角 j>i 有值）。
+// 上三角格子帶 class="corr-cell" + data-i/data-j（呼叫端可委派點擊 → 開該對 scatter）。
+// opts={colorMax(預設1，可調), scheme(預設rb：r>0紅、r<0藍), caption, legendLabel}
+// =====================================================================
+export function corrMatrixSVG(labels, cells, opts = {}) {
+  const uid = "m" + Math.random().toString(36).slice(2, 8);
+  const N = labels.length, cw = 34, ch = 34;
+  const maxLabLen = Math.max(1, ...labels.map(l => String(l).length));
+  const L = Math.max(70, Math.ceil(maxLabLen * 6.5) + 12);
+  const colAngle = 45, diag = Math.cos(colAngle * Math.PI / 180);
+  const Btop = Math.ceil(maxLabLen * 6.0 * diag) + 18;
+  // 色階放在「所有內容（含最右上旋轉標籤的右端）」之外，避免擋住標籤
+  const topLabelRight = L + (N - 1) * cw + cw / 2 + Math.ceil(maxLabLen * 6.0 * diag);
+  const lh = Math.min(N * ch, 150);
+  const lx = Math.max(L + N * cw + 24, topLabelRight + 14);
+  const W = lx + 60;
+  const _mc = Math.max(8, Math.floor((W - 16) / 7.2));
+  const titleLines = opts.caption ? String(opts.caption).split("\n").flatMap(seg => wrapText(seg, _mc)) : [];
+  const titleH = titleLines.length * 15 + 8;
+  const top = titleH + Btop;
+  const H = Math.max(top + N * ch, top + lh + 18) + 14;
+  const vmax = opts.colorMax || 1, scheme = opts.scheme || "rb";
+  let s = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:auto" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">`;
+  s += `<defs><linearGradient id="cbar-${uid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${divColor(vmax, vmax, scheme)}"/><stop offset="50%" stop-color="#ffffff"/><stop offset="100%" stop-color="${divColor(-vmax, vmax, scheme)}"/></linearGradient></defs>`;
+  titleLines.forEach((ln, i) => s += `<text x="${W / 2}" y="${14 + i * 15}" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2733">${ln}</text>`);
+  // 上方欄標籤（旋轉 45°）+ 左側列標籤
+  for (let j = 0; j < N; j++) { const x = L + j * cw + cw / 2; s += `<text x="${x}" y="${top - 6}" transform="rotate(-${colAngle} ${x} ${top - 6})" text-anchor="start" font-size="11" fill="#1f2733">${labels[j]}</text>`; }
+  for (let i = 0; i < N; i++) s += `<text x="${L - 6}" y="${top + i * ch + ch / 2 + 4}" text-anchor="end" font-size="11" fill="#1f2733">${labels[i]}</text>`;
+  // 只畫上三角 j>i（下三角與對角留白）
+  for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+    const cell = (cells[i] && cells[i][j]) || { state: "nodata" };
+    const x = L + j * cw, y = top + i * ch;
+    if (cell.state === "nodata") { s += `<rect x="${x}" y="${y}" width="${cw}" height="${ch}" fill="#f4f5f7" stroke="#fff"><title>${cell.tip || "n/a"}</title></rect>`; continue; }
+    const op = cell.state === "weak" ? 0.45 : 1;
+    s += `<rect class="corr-cell" data-i="${i}" data-j="${j}" x="${x}" y="${y}" width="${cw}" height="${ch}" fill="${divColor(cell.value, vmax, scheme)}" fill-opacity="${op}" stroke="#fff" style="cursor:pointer"><title>${cell.tip || ""}</title></rect>`;
+    if (cell.stars) s += `<text x="${x + cw / 2}" y="${y + ch / 2 + 4}" text-anchor="middle" font-size="12" font-weight="700" fill="#1f2733" pointer-events="none">${cell.stars}</text>`;
+  }
+  // 色階（固定 ±vmax；lx/lh 已在上方算好，確保不擋標籤）
+  const ly = top;
+  s += `<rect x="${lx}" y="${ly}" width="12" height="${lh}" fill="url(#cbar-${uid})" stroke="#c9ced6"/>`;
+  s += `<text x="${lx + 16}" y="${ly + 8}" font-size="10" fill="#6b7480">+${vmax.toFixed(2)}</text>`;
+  s += `<text x="${lx + 16}" y="${ly + lh / 2 + 3}" font-size="10" fill="#6b7480">0</text>`;
+  s += `<text x="${lx + 16}" y="${ly + lh}" font-size="10" fill="#6b7480">−${vmax.toFixed(2)}</text>`;
+  s += `<text x="${lx + 6}" y="${ly + lh + 16}" font-size="10" fill="#6b7480">${opts.legendLabel || "r"}</text>`;
+  s += `</svg>`;
+  return s;
+}

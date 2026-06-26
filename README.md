@@ -16,6 +16,7 @@
 - 多基因組合分組的進階生存（HH vs LL ＋ 臨床亞組 screening）
 - Univariate ／ Multivariate Cox 回歸（基因 ＋ 臨床因子的 HR forest plot）
 - 基因表現 × 免疫浸潤相關性
+- 基因 × 基因 的表現相關（兩兩矩陣／scatter，含 miRNA）
 - 單基因在臨床兩組間的表現差異
 
 不用裝任何東西、不用寫程式、不用跑 R。
@@ -70,6 +71,7 @@ js/analyses/    各分析（一檔一個，互不干擾）
   Advanced Survival   多基因組合分組 ＋ 臨床 subset ＋ 亞組 screening
   Cox Regression      univariate／multivariate Cox（HR forest plot；OS/DSS/DFI/PFI endpoint）
   Immune Correlation  基因表現 × 免疫浸潤相關（Spearman / Pearson，per-cancer）
+  Gene Correlation    GOI 兩兩表現相關（scatter／上三角矩陣／跨癌種，含 miRNA）
   Group Comparison    單基因 × 單癌別分組比較（U-test、scatter＋bar）
 
 app.js          薄殼：註冊分析、切換頁籤
@@ -115,6 +117,10 @@ python -m http.server 8000
 - [ ] 數百項臨床 factor ＋ 可搜尋 picker（接入大臨床表後）
 - [ ] ROC ／ 時間依賴 ROC（基因當 predictor）
 - [ ] Logistic regression
+
+### 相關分析
+- [x] 基因 × 基因 相關（**Gene Correlation** 分頁：scatter／上三角矩陣／跨癌種，含 miRNA）
+- [ ] Advanced Correlation（臨床 subset 後的相關，如 Advanced Survival 那樣）
 
 ### OSCC 資料接入（最終目標）
 - [ ] 把實驗室 OSCC RNA-seq 做成相同格式（per-gene、clinical、自跑免疫 deconvolution；臨床表格式見 `CLINICAL_TABLE_SPEC.md`）
