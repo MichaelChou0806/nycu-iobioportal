@@ -116,9 +116,11 @@ export const groupCompare = {
         const c = clinical.get(s.patient_id);
         if (!c) continue;
         if (c.redaction && c.redaction.trim() !== "") continue;
+        const ev = vals[i];
+        if (!isFinite(ev)) continue;     // miRNA 缺值樣本：跳過（避免污染統計）
         const gv = (c[G.col] || "").trim();
-        if (gv === G.a) A.push(vals[i]);
-        else if (gv === G.b) B.push(vals[i]);
+        if (gv === G.a) A.push(ev);
+        else if (gv === G.b) B.push(ev);
       }
 
       if (A.length < 1 || B.length < 1) {
@@ -139,6 +141,7 @@ export const groupCompare = {
     }
 
     function render(rec, cancer, G, st, test, A, B) {
+      const unit = rec.assay === "mirna_rpm" ? "RPM" : "TPM";   // miRNA 標 RPM，其餘 TPM
       $("#gc-result").classList.remove("hidden");
       $("#gc-title").textContent = `${rec.symbol || rec.gene_id} expression in ${dataset.name} · ${cancer} — ${G.a} vs ${G.b}`;
       const f = x => x.toFixed(2);
@@ -155,10 +158,10 @@ export const groupCompare = {
 
       $("#gc-chart1").innerHTML = scatterSVG(
         [{ name: G.a, vals: A, med: st.a.med, color: "var(--groupA)" },
-         { name: G.b, vals: B, med: st.b.med, color: "var(--groupB)" }], yMax, "TPM (jitter + median)");
+         { name: G.b, vals: B, med: st.b.med, color: "var(--groupB)" }], yMax, `${unit} (jitter + median)`);
       $("#gc-chart2").innerHTML = barSVG(
         [{ name: G.a, m: st.a.mean, sd: st.a.sd, n: st.a.n, color: "var(--groupA)" },
-         { name: G.b, m: st.b.mean, sd: st.b.sd, n: st.b.n, color: "var(--groupB)" }], yMax, "TPM (mean ± SD)");
+         { name: G.b, m: st.b.mean, sd: st.b.sd, n: st.b.n, color: "var(--groupB)" }], yMax, `${unit} (mean ± SD)`);
     }
 
     function exportCSV() {

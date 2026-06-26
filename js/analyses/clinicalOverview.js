@@ -428,7 +428,7 @@ export const clinicalOverview = {
       recs.forEach((r, ri) => {
         const vals = geneVals.get(r.rec.gene_id); const rowCells = [];
         cancers.forEach(c => {
-          const cc = per[c]; const base = cc.base.map(i => vals[i]), adv = cc.adv.map(i => vals[i]);
+          const cc = per[c]; const base = cc.base.map(i => vals[i]).filter(v => isFinite(v)), adv = cc.adv.map(i => vals[i]).filter(v => isFinite(v));
           const nb = base.length, na = adv.length;
           let cell;
           if (cc.nField === 0) cell = { state: "nodata", tip: `${r.label} / ${c}: no ${D.name} data` };
@@ -479,7 +479,7 @@ export const clinicalOverview = {
         const lbl = labelsOf(D, assignmentOf(D));
         const rowCells = []; const pRow = [];
         cancers.forEach((c, ci) => {
-          const cc = per[c]; const base = cc.base.map(i => vals[i]), adv = cc.adv.map(i => vals[i]);
+          const cc = per[c]; const base = cc.base.map(i => vals[i]).filter(v => isFinite(v)), adv = cc.adv.map(i => vals[i]).filter(v => isFinite(v));
           const nb = base.length, na = adv.length;
           let cell;
           if (cc.nField === 0) cell = { state: "nodata", tip: `${D.name} / ${c}: no data` };
@@ -538,23 +538,25 @@ export const clinicalOverview = {
       const pPerDimGene = []; // {ri, advCi, p}
       recs.forEach((r, ri) => {
         const vals = geneVals.get(r.rec.gene_id);
-        const colMeans = cols.map(col => col.idx.length ? mean(col.idx.map(i => vals[i])) : null);
+        const colVals = cols.map(col => col.idx.map(i => vals[i]).filter(v => isFinite(v)));   // 濾掉缺值樣本（miRNA）
+        const colMeans = colVals.map(cv => cv.length ? mean(cv) : null);
         const z = zscoreRow(colMeans);
         const rowCells = cols.map((col, ci) => {
-          if (!col.idx.length) return { state: "nodata", tip: `${r.label} / ${col.label}: no data` };
-          const weak = col.idx.length < THR.minPerGroup;
-          return { value: z[ci], state: weak ? "weak" : "ok", stars: "", tip: `${r.label} / ${col.label}: z=${(z[ci] ?? 0).toFixed(2)}, n=${col.idx.length}, mean=${colMeans[ci].toFixed(2)}` };
+          const nC = colVals[ci].length;
+          if (!nC) return { state: "nodata", tip: `${r.label} / ${col.label}: no data` };
+          const weak = nC < THR.minPerGroup;
+          return { value: z[ci], state: weak ? "weak" : "ok", stars: "", tip: `${r.label} / ${col.label}: z=${(z[ci] ?? 0).toFixed(2)}, n=${nC}, mean=${colMeans[ci].toFixed(2)}` };
         });
         // 每維度成對檢定（star 標在 advanced 欄）
         dims.forEach(D => {
           const cb = colKey[D.id + "|baseline"], ca = colKey[D.id + "|advanced"];
           const advCi = cols.indexOf(ca);
-          if (cb.idx.length && ca.idx.length) {
-            const bv = cb.idx.map(i => vals[i]), av = ca.idx.map(i => vals[i]);
+          const bv = cb.idx.map(i => vals[i]).filter(v => isFinite(v)), av = ca.idx.map(i => vals[i]).filter(v => isFinite(v));
+          if (bv.length && av.length) {
             const t = mannWhitney(bv, av);
-            const weak = cb.idx.length < THR.minPerGroup || ca.idx.length < THR.minPerGroup;
+            const weak = bv.length < THR.minPerGroup || av.length < THR.minPerGroup;
             if (!weak) pPerDimGene.push({ ri, advCi, p: t.p });
-            table.push({ gene: r.label, dimension: D.name, n_base: cb.idx.length, n_adv: ca.idx.length, mean_base: mean(bv), mean_adv: mean(av), p: t.p });
+            table.push({ gene: r.label, dimension: D.name, n_base: bv.length, n_adv: av.length, mean_base: mean(bv), mean_adv: mean(av), p: t.p });
             rowCells[advCi].pairP = t.p;
           }
         });
@@ -574,15 +576,16 @@ export const clinicalOverview = {
       // 單基因：附 image 2 那種 bar（各組原始 TPM mean±SD）
       if (recs.length === 1) {
         const vals = geneVals.get(recs[0].rec.gene_id);
+        const unit = recs[0].rec.assay === "mirna_rpm" ? "RPM" : "TPM";   // miRNA 標 RPM
         const groups = cols.map((col, ci) => {
-          if (!col.idx.length) return { name: col.label, state: "nodata" };
-          const gv = col.idx.map(i => vals[i]);
-          const weak = col.idx.length < THR.minPerGroup;
+          const gv = col.idx.map(i => vals[i]).filter(v => isFinite(v));
+          if (!gv.length) return { name: col.label, state: "nodata" };
+          const weak = gv.length < THR.minPerGroup;
           const cell = cells[0][ci];
           const nG = gv.length, sem = nG > 1 ? sd(gv) / Math.sqrt(nG) : 0;
           return { name: col.label, m: mean(gv), err: sem, color: col.side === "baseline" ? "#cbd5e1" : "#64748b", state: weak ? "weak" : "ok", stars: cell.stars };
         });
-        out.singleBar = multiBarSVG(groups, { caption: `${recs[0].label} expression (mean ± SEM)`, ylabel: "TPM" });
+        out.singleBar = multiBarSVG(groups, { caption: `${recs[0].label} expression (mean ± SEM)`, ylabel: unit });
       }
       return out;
     }

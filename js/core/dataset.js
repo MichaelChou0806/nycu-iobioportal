@@ -41,6 +41,13 @@ export class Dataset {
     // gene_index：symbol / ENSG -> 檔案位置
     this.geneIndex = JSON.parse(await fetchGzipText(this.base + "/" + this.manifest.gene_index_file));
 
+    // 併入 miRNA 查表：成熟體與基因走同一條 resolveGene / getGeneValues（此資料集沒有 miRNA 就略過）
+    try {
+      const mi = JSON.parse(await fetchGzipText(this.base + "/mirna_index.json.gz"));
+      Object.assign(this.geneIndex.by_ensembl, mi.by_ensembl);
+      for (const [sym, arr] of Object.entries(mi.by_symbol)) (this.geneIndex.by_symbol[sym] || (this.geneIndex.by_symbol[sym] = [])).push(...arr);
+    } catch (e) { /* 沒有 miRNA index（如 OSCC 尚未建）→ 略過 */ }
+
     this.loaded = true;
   }
 
@@ -66,7 +73,7 @@ export class Dataset {
     const url = `${this.base}/expr/${rec.shard}/${rec.file}`;
     const txt = await fetchGzipText(url);
     const scale = this.manifest.value_scale || 1;
-    const vals = txt.split(",").map(v => Number(v) / scale);
+    const vals = txt.split(",").map(v => (v === "" ? NaN : Number(v) / scale));   // 空欄＝該樣本無此 assay（miRNA 缺值）→ NaN，別當成 0
     if (vals.length !== this.samples.length)
       throw new Error(`基因檔長度 ${vals.length} 與樣本數 ${this.samples.length} 不符`);
     this.geneCache.set(rec.gene_id, vals);
