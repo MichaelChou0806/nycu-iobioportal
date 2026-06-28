@@ -125,6 +125,7 @@ export const coxRegression = {
       months: saved.months != null ? saved.months : 0,
       model: saved.model === "multi" ? "multi" : "uni",
       swap: !!saved.swap,
+      scheme: saved.scheme === "rb" ? "rb" : "rg",
     };
     const currentEndpoint = () => endpoints.find(ep => ep.id === state.endpoint) || endpoints[0];
     const selCancers = () => state.cancers.filter(c => state.selectedCancers.includes(c));
@@ -179,7 +180,8 @@ export const coxRegression = {
         <div class="cx-sec">
           <div class="cx-toolbar">
             <button id="cx-run">Run</button>
-            <button class="cx-mini" id="cx-swap" title="swap rows/cols" style="display:none">Swap</button>
+            <label class="cx-ctl" id="cx-scheme-wrap" style="display:none">Colors<select id="cx-scheme"><option value="rg">Red–Green</option><option value="rb">Red–Blue</option></select></label>
+            <button class="cx-mini" id="cx-swap" style="display:none">Swap rows/cols</button>
             <span class="cx-sep"></span>
             <button class="cx-mini" id="cx-csv" style="display:none">Export CSV</button>
             <button class="cx-mini" id="cx-svg" style="display:none">SVG</button>
@@ -201,7 +203,7 @@ export const coxRegression = {
     genesEl.addEventListener("input", () => setGOIs(parseGenes(genesEl.value)));
     const off = onGOIsChanged(list => { if (document.activeElement !== genesEl) genesEl.value = list.join(", "); });
     // 控制項初值
-    endpointSel.value = state.endpoint; splitSel.value = state.split; if (state.months > 0) monthsEl.value = state.months;
+    endpointSel.value = state.endpoint; splitSel.value = state.split; if (state.months > 0) monthsEl.value = state.months; $("#cx-scheme").value = state.scheme;
     // Model segmented toggle（取代下拉，更明顯）
     const modelSeg = $("#cx-model");
     const setModelActive = () => modelSeg.querySelectorAll(".cx-seg-btn").forEach(b => b.classList.toggle("active", b.dataset.model === state.model));
@@ -258,6 +260,7 @@ export const coxRegression = {
     $("#cx-c-all").addEventListener("click", () => { state.selectedCancers = state.cancers.slice(); commit(); renderCancers(); renderDims(); });
     $("#cx-c-none").addEventListener("click", () => { state.selectedCancers = []; commit(); renderCancers(); renderDims(); });
     $("#cx-swap").addEventListener("click", () => { state.swap = !state.swap; commit(); if (lastView === "heatmap" && resultEl.querySelector("svg")) run(); });
+    $("#cx-scheme").addEventListener("change", () => { state.scheme = $("#cx-scheme").value; commit(); if (lastView === "heatmap" && resultEl.querySelector("svg")) run(); });
 
     endpointSel.addEventListener("change", () => { state.endpoint = endpointSel.value; commit(); });
     splitSel.addEventListener("change", () => { state.split = splitSel.value; commit(); });
@@ -298,7 +301,7 @@ export const coxRegression = {
 
     async function run() {
       resultEl.innerHTML = ""; lastItems = null; lastHeatmap = null;
-      ["cx-csv", "cx-svg", "cx-png", "cx-swap"].forEach(id => $("#" + id).style.display = "none");
+      ["cx-csv", "cx-svg", "cx-png", "cx-swap", "cx-scheme-wrap"].forEach(id => $("#" + id).style.display = "none");
       const cancers = selCancers();
       if (!cancers.length) { statusEl.className = "status err"; statusEl.textContent = "Select at least one cancer."; return; }
       const recs = [], unknown = [];
@@ -322,8 +325,8 @@ export const coxRegression = {
         else renderUnivariate(recs, selDims, geneVals, patients, epLabel, unknown, cancers[0]);
       } else {                                                          // 多癌種 → heatmap
         lastView = "heatmap"; lastSVGName = `cox_${state.model}_heatmap_${lastEndpoint}`;
-        if (state.model === "multi") { statusEl.className = "status err"; statusEl.textContent = "Multivariate × multiple cancers (heatmap) is coming next. For now: pick one cancer for a multivariate forest, or switch to Univariate for the multi-cancer heatmap."; return; }
-        drawUniHeatmap(recs, selDims, geneVals, cancers, epLabel, unknown);
+        if (state.model === "multi") drawMultiHeatmap(recs, selDims, geneVals, cancers, epLabel, unknown);
+        else drawUniHeatmap(recs, selDims, geneVals, cancers, epLabel, unknown);
       }
     }
 
@@ -459,12 +462,77 @@ export const coxRegression = {
       const facLab = factors.map(f => f.label);
       let rLab = facLab, cLab = cancers, grid = cells;
       if (state.swap) { rLab = cancers; cLab = facLab; grid = cancers.map((_, ci) => factors.map((_, ri) => cells[ri][ci])); }
-      resultEl.innerHTML = heatmapSVG(rLab, cLab, grid, { colorMax, scheme: "rg", legendLabel: "log2 HR", caption: `Univariate Cox HR · ${epLabel}${state.months > 0 ? ` · ${state.months}-mo` : ""}` });
+      resultEl.innerHTML = heatmapSVG(rLab, cLab, grid, { colorMax, scheme: state.scheme, legendLabel: "log2 HR", caption: `Univariate Cox HR · ${epLabel}${state.months > 0 ? ` · ${state.months}-mo` : ""}` });
       const note = document.createElement("div"); note.className = "cx-legend";
-      note.textContent = `Per-factor univariate Cox HR per cancer (${epLabel}). red HR>1 (worse), green HR<1 (better) · ★ FDR within each cancer · faded = <10 per group or <10 events · grey = not estimable${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`;
+      note.textContent = `Per-factor univariate Cox HR per cancer (${epLabel}). red HR>1 (worse), ${state.scheme === "rb" ? "blue" : "green"} HR<1 (better) · ★ FDR within each cancer · faded = <10 per group or <10 events · grey = not estimable${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`;
       resultEl.appendChild(note);
-      $("#cx-csv").style.display = ""; $("#cx-svg").style.display = ""; $("#cx-png").style.display = ""; $("#cx-swap").style.display = "";
+      ["cx-csv", "cx-svg", "cx-png", "cx-swap", "cx-scheme-wrap"].forEach(id => $("#" + id).style.display = "");
       statusEl.textContent = `Done — ${factors.length} factor(s) × ${cancers.length} cancer(s).`;
+    }
+
+    // 某癌種的多變量模型 → 每 factor 的 adjusted HR（該癌種無資料/單組的 factor 不納入模型）
+    function cancerMultiHR(cancer, factors, geneVals) {
+      const patients = patientsInScope(dataset, [cancer]);
+      const elig = patients.map(p => ({ p, surv: survOf(p.clin) })).filter(o => o.surv);
+      const used = [];
+      factors.forEach((f, fi) => {
+        let code;
+        if (f.kind === "gene") {
+          const vals = geneVals.get(f.g.rec.gene_id);
+          const expr = elig.map(o => vals[o.p.idx]);
+          const finiteIdx = []; expr.forEach((v, i) => { if (isFinite(v)) finiteIdx.push(i); });
+          const grpF = splitGroups(finiteIdx.map(i => expr[i]), state.split);
+          code = new Array(elig.length).fill(null);
+          finiteIdx.forEach((i, k) => { code[i] = grpF[k] === 1 ? 1 : grpF[k] === 0 ? 0 : null; });
+        } else {
+          code = elig.map(o => { const b = classify(f.d, o.p.clin[f.d.field], undefined); return b === "advanced" ? 1 : b === "baseline" ? 0 : null; });
+        }
+        const n1 = code.reduce((s, c) => s + (c === 1 ? 1 : 0), 0), n0 = code.reduce((s, c) => s + (c === 0 ? 1 : 0), 0);
+        if (n1 > 0 && n0 > 0) used.push({ fi, code });
+      });
+      if (used.length < 1) return { byFactor: {} };
+      const keep = [];
+      for (let i = 0; i < elig.length; i++) if (used.every(u => u.code[i] != null)) keep.push(i);
+      const nEvents = keep.reduce((s, i) => s + elig[i].surv.e, 0);
+      if (keep.length < used.length + 2 || nEvents < 2) return { byFactor: {} };
+      const times = keep.map(i => elig[i].surv.tm), events = keep.map(i => elig[i].surv.e);
+      const X = keep.map(i => used.map(u => u.code[i]));
+      const fit = coxPH(times, events, X);
+      if (fit.error) return { byFactor: {} };
+      const epv = nEvents / used.length, byFactor = {};
+      used.forEach((u, k) => { byFactor[u.fi] = { hr: fit.hr[k], p: fit.p[k], weak: epv < 10 }; });
+      return { byFactor };
+    }
+
+    // ── Multivariate × 多癌種 → adjusted HR heatmap（每癌種各建一個模型）──
+    function drawMultiHeatmap(recs, selDims, geneVals, cancers, epLabel, unknown) {
+      const factors = [
+        ...recs.map(g => ({ kind: "gene", g, label: `${g.label}: High vs Low` })),
+        ...selDims.map(d => { const [bl, al] = labelsOf(d); return { kind: "dim", d, label: `${d.name}: ${al} vs ${bl}` }; }),
+      ];
+      const perCancer = cancers.map(c => cancerMultiHR(c, factors, geneVals));
+      const cells = factors.map((f, fi) => cancers.map((c, ci) => {
+        const r = perCancer[ci].byFactor[fi];
+        if (!r || !isFinite(r.hr) || r.hr <= 0) return { state: "nodata", tip: `${f.label} / ${c}: not in model / not estimable` };
+        return { value: Math.log2(r.hr), state: r.weak ? "weak" : "ok", stars: "", tip: `${f.label} / ${c}: adj HR=${r.hr.toFixed(2)}, p=${r.p.toPrecision(2)}`, _hr: r.hr, _p: r.p };
+      }));
+      cancers.forEach((c, ci) => {   // FDR：每癌種欄內各自校正（Wald p）
+        const idxs = []; factors.forEach((f, fi) => { const cell = cells[fi][ci]; if (cell.state !== "nodata") idxs.push({ fi, p: cell._p }); });
+        const q = benjaminiHochberg(idxs.map(x => x.p));
+        idxs.forEach((x, k) => { const cell = cells[x.fi][ci]; const st = pStars(q[k]); cell.stars = st === "ns" ? "" : st; cell.tip += `, q=${q[k].toPrecision(2)}`; });
+      });
+      let maxAbs = 0; cells.forEach(row => row.forEach(c => { if (c.state !== "nodata" && isFinite(c.value)) maxAbs = Math.max(maxAbs, Math.abs(c.value)); }));
+      const colorMax = Math.min(4, Math.max(0.5, Math.ceil(maxAbs * 10) / 10));
+      lastHeatmap = { factors, cancers, cells };
+      const facLab = factors.map(f => f.label);
+      let rLab = facLab, cLab = cancers, grid = cells;
+      if (state.swap) { rLab = cancers; cLab = facLab; grid = cancers.map((_, ci) => factors.map((_, ri) => cells[ri][ci])); }
+      resultEl.innerHTML = heatmapSVG(rLab, cLab, grid, { colorMax, scheme: state.scheme, legendLabel: "log2 adj HR", caption: `Multivariate Cox adjusted HR · ${epLabel}${state.months > 0 ? ` · ${state.months}-mo` : ""}` });
+      const note = document.createElement("div"); note.className = "cx-legend";
+      note.textContent = `Each cancer = its own multivariate Cox (${epLabel}), adjusted HR per factor. Exploratory pan-cancer — each model adjusts for the factors available in that cancer (sets may differ), so columns are not strictly comparable. red adj.HR>1, ${state.scheme === "rb" ? "blue" : "green"} <1 · ★ FDR within each cancer · faded = EPV<10 · grey = not in model${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`;
+      resultEl.appendChild(note);
+      ["cx-csv", "cx-svg", "cx-png", "cx-swap", "cx-scheme-wrap"].forEach(id => $("#" + id).style.display = "");
+      statusEl.textContent = `Done — multivariate heatmap, ${factors.length} factor(s) × ${cancers.length} cancer(s).`;
     }
 
     function exportCSV() {
