@@ -57,8 +57,14 @@ function injectStyles() {
     .cx-dim small{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75;font-size:10.5px}
     .cx-note{font-size:11.5px;color:var(--muted);line-height:1.5}
     .cx-result{overflow-x:auto}
-    .cx-result svg{max-width:100%;height:auto;background:#fff;border:1px solid var(--line);border-radius:8px;margin-top:10px}
+    .cx-result svg,.cx-drill svg{max-width:100%;height:auto;background:#fff;border:1px solid var(--line);border-radius:8px;margin-top:10px}
     .cx-legend{font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.5}
+    .cx-views{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
+    .cx-views > div{flex:1 1 360px;min-width:0}
+    .cx-views > div:empty{display:none}
+    .cx-drill{overflow-x:auto}
+    .cx-drill-head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+    .cx-drill-title{font-weight:600;font-size:13px;color:var(--ink);margin-right:4px}
   `;
   const el = document.createElement("style"); el.textContent = css; document.head.appendChild(el);
 }
@@ -129,7 +135,7 @@ export const coxRegression = {
     };
     const currentEndpoint = () => endpoints.find(ep => ep.id === state.endpoint) || endpoints[0];
     const selCancers = () => state.cancers.filter(c => state.selectedCancers.includes(c));
-    let lastSVGName = "cox_forest", lastItems = null, lastCancer = "", lastEndpoint = "OS", lastModel = "uni", lastView = "forest", lastHeatmap = null;
+    let lastSVGName = "cox_forest", lastItems = null, lastCancer = "", lastEndpoint = "OS", lastModel = "uni", lastView = "forest", lastHeatmap = null, drillCtx = null;
 
 
     container.innerHTML = `
@@ -188,14 +194,17 @@ export const coxRegression = {
             <button class="cx-mini" id="cx-png" style="display:none">PNG</button>
           </div>
           <div id="cx-status" class="status"></div>
-          <div id="cx-result" class="cx-result"></div>
+          <div class="cx-views">
+            <div id="cx-result" class="cx-result"></div>
+            <div id="cx-drill" class="cx-drill"></div>
+          </div>
         </div>
         <div class="cx-note">Tumor only · survival endpoint selectable above. Genes are High vs Low; clinical factors are advanced vs baseline level. <span style="color:#b45309;font-weight:700">†</span> marks post-baseline factors (e.g. recurrence): off by default because they can distort baseline prognosis — enable only deliberately. Vital status is excluded (it is the survival event).</div>
       </div>`;
 
     const $ = s => container.querySelector(s);
     const genesEl = $("#cx-genes"), splitSel = $("#cx-split"), monthsEl = $("#cx-months"), endpointSel = $("#cx-endpoint");
-    const dimsBox = $("#cx-dims"), statusEl = $("#cx-status"), resultEl = $("#cx-result"), chipBox = $("#cx-cancers");
+    const dimsBox = $("#cx-dims"), statusEl = $("#cx-status"), resultEl = $("#cx-result"), drillEl = $("#cx-drill"), chipBox = $("#cx-cancers");
 
     function commit() { saveState(state); }
     // GOIs 共享
@@ -300,7 +309,7 @@ export const coxRegression = {
     }
 
     async function run() {
-      resultEl.innerHTML = ""; lastItems = null; lastHeatmap = null;
+      resultEl.innerHTML = ""; drillEl.innerHTML = ""; lastItems = null; lastHeatmap = null; drillCtx = null;
       ["cx-csv", "cx-svg", "cx-png", "cx-swap", "cx-scheme-wrap"].forEach(id => $("#" + id).style.display = "none");
       const cancers = selCancers();
       if (!cancers.length) { statusEl.className = "status err"; statusEl.textContent = "Select at least one cancer."; return; }
@@ -332,8 +341,8 @@ export const coxRegression = {
 
     function showExports() { $("#cx-csv").style.display = ""; $("#cx-svg").style.display = ""; $("#cx-png").style.display = ""; }
 
-    // ── Univariate：每個因子各自一個 Cox ──
-    function renderUnivariate(recs, selDims, geneVals, patients, epLabel, unknown, cancer) {
+    // ── Univariate：每個因子各自一個 Cox（純計算，供 forest 與 drill 共用）──
+    function uniItems(recs, selDims, geneVals, patients) {
       const items = [];
       recs.forEach(g => {
         const vals = geneVals.get(g.rec.gene_id);
@@ -358,21 +367,28 @@ export const coxRegression = {
       const q = benjaminiHochberg(est.map(it => it.p));
       est.forEach((it, k) => { it.q = q[k]; const st = pStars(q[k]); it.stars = st === "ns" ? "" : st; it.pText = fmtP(it.p); it.tip += `, q=${q[k].toPrecision(2)}`; });
       items.forEach(it => { if (it.state === "nodata") it.pText = ""; });
-
+      return items;
+    }
+    function uniNoteText(epLabel, unknown) {
+      return `Each factor in its own univariate Cox (${epLabel}). Genes: High vs Low (${state.split}); clinical: advanced vs baseline. ★ FDR q<0.05 ★★<0.01 ★★★<0.001 ★★★★<0.0001 · faded = <10 per group or <10 events · red HR>1 (worse), green HR<1 (better)${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`;
+    }
+    function renderUnivariate(recs, selDims, geneVals, patients, epLabel, unknown, cancer) {
+      const items = uniItems(recs, selDims, geneVals, patients);
       lastItems = items;
       resultEl.innerHTML = forestSVG(items, {
         caption: `Univariate Cox · ${cancer} · ${epLabel}${state.months > 0 ? ` · ${state.months}-mo` : ""}`,
         scheme: "rg",
       });
       const note = document.createElement("div"); note.className = "cx-legend";
-      note.textContent = `Each factor in its own univariate Cox (${epLabel}). Genes: High vs Low (${state.split}); clinical: advanced vs baseline. ★ FDR q<0.05 ★★<0.01 ★★★<0.001 ★★★★<0.0001 · faded = <10 per group or <10 events · red HR>1 (worse), green HR<1 (better)${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`;
+      note.textContent = uniNoteText(epLabel, unknown);
       resultEl.appendChild(note);
       showExports();
       statusEl.textContent = `Done — ${items.length} factor(s).`;
     }
 
-    // ── Multivariate：所有選到的因子放進同一個 Cox（互相校正，complete-case）──
-    function renderMultivariate(recs, selDims, geneVals, patients, epLabel, unknown, cancer) {
+    // ── Multivariate：所有選到的因子放進同一個 Cox（互相校正，complete-case；純計算，供 forest 與 drill 共用）──
+    // 回傳 {items, fit, nEvents, covsLen} 或 {error}（不可估計時）
+    function multiItems(recs, selDims, geneVals, patients) {
       const elig = patients.map(p => ({ p, surv: survOf(p.clin) })).filter(o => o.surv);
       const covs = [];   // 每個共變量：{label, code:[每位 elig 病人的 0/1 或 null=缺]}
       recs.forEach(g => {
@@ -389,20 +405,16 @@ export const coxRegression = {
         const code = elig.map(o => { const b = classify(d, o.p.clin[d.field], undefined); return b === "advanced" ? 1 : b === "baseline" ? 0 : null; });
         covs.push({ label: `${d.name}: ${al} vs ${bl}`, code });
       });
-      if (!covs.length) { statusEl.className = "status err"; statusEl.textContent = "Select at least one factor for the model."; return; }
+      if (!covs.length) return { error: "Select at least one factor for the model." };
       const keep = [];
       for (let i = 0; i < elig.length; i++) if (covs.every(c => c.code[i] != null)) keep.push(i);
       const nEvents = keep.reduce((s, i) => s + elig[i].surv.e, 0);
-      if (keep.length < covs.length + 2 || nEvents < 2) {
-        statusEl.className = "status err";
-        statusEl.textContent = `Not enough complete cases (n=${keep.length}, events=${nEvents}) for ${covs.length} covariate(s). Remove a factor.`;
-        return;
-      }
+      if (keep.length < covs.length + 2 || nEvents < 2)
+        return { error: `Not enough complete cases (n=${keep.length}, events=${nEvents}) for ${covs.length} covariate(s). Remove a factor.` };
       const times = keep.map(i => elig[i].surv.tm), events = keep.map(i => elig[i].surv.e);
       const X = keep.map(i => covs.map(c => c.code[i]));
       const fit = coxPH(times, events, X);
-      if (fit.error) { statusEl.className = "status err"; statusEl.textContent = `Model not estimable: ${fit.error}. Try removing a collinear factor.`; return; }
-
+      if (fit.error) return { error: `Model not estimable: ${fit.error}. Try removing a collinear factor.` };
       const items = covs.map((c, k) => {
         const hr = fit.hr[k], lo = fit.ciLow[k], hi = fit.ciHigh[k], p = fit.p[k];
         const st = pStars(p);
@@ -411,18 +423,78 @@ export const coxRegression = {
           tip: `${c.label}: adjusted HR=${hr.toFixed(2)} (${lo.toFixed(2)}–${hi.toFixed(2)}), p=${p.toPrecision(2)}`,
         };
       });
+      return { items, fit, nEvents, covsLen: covs.length };
+    }
+    function multiNoteHTML(epLabel, unknown, fit, covsLen, nEvents) {
+      const epv = nEvents / covsLen;
+      return `One multivariate Cox (${epLabel}), all factors mutually adjusted · n=${fit.n} complete cases, ${fit.events} events, ${covsLen} covariates. Genes High vs Low (${state.split}); clinical advanced vs baseline. p = Wald. ★ p<0.05 ★★<0.01 ★★★<0.001 ★★★★<0.0001 · red adjusted HR>1 (worse), green <1 (better)${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`
+        + (epv < 10 ? `<br><span style="color:#b45309">${epv.toFixed(1)} events per covariate (&lt;10) — estimates may be unstable; consider fewer factors.</span>` : "");
+    }
+    function renderMultivariate(recs, selDims, geneVals, patients, epLabel, unknown, cancer) {
+      const res = multiItems(recs, selDims, geneVals, patients);
+      if (res.error) { statusEl.className = "status err"; statusEl.textContent = res.error; return; }
+      const { items, fit, nEvents, covsLen } = res;
       lastItems = items;
       resultEl.innerHTML = forestSVG(items, {
         caption: `Multivariate Cox · ${cancer} · ${epLabel}${state.months > 0 ? ` · ${state.months}-mo` : ""}`,
         scheme: "rg",
       });
-      const epv = nEvents / covs.length;
       const note = document.createElement("div"); note.className = "cx-legend";
-      note.innerHTML = `One multivariate Cox (${epLabel}), all factors mutually adjusted · n=${fit.n} complete cases, ${fit.events} events, ${covs.length} covariates. Genes High vs Low (${state.split}); clinical advanced vs baseline. p = Wald. ★ p<0.05 ★★<0.01 ★★★<0.001 ★★★★<0.0001 · red adjusted HR>1 (worse), green <1 (better)${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`
-        + (epv < 10 ? `<br><span style="color:#b45309">${epv.toFixed(1)} events per covariate (&lt;10) — estimates may be unstable; consider fewer factors.</span>` : "");
+      note.innerHTML = multiNoteHTML(epLabel, unknown, fit, covsLen, nEvents);
       resultEl.appendChild(note);
       showExports();
       statusEl.textContent = `Done — multivariate, n=${fit.n}, ${fit.events} events.`;
+    }
+    // ── 點 heatmap 一格 → 在右側 drill 面板畫該癌種、當前 model 的完整 forest ──
+    function drawDrillForest(cancerIdx) {
+      if (!drillCtx || !lastHeatmap) return;
+      const { recs, selDims, geneVals, model, epLabel, unknown } = drillCtx;
+      const cancer = lastHeatmap.cancers[cancerIdx];
+      if (cancer == null) return;
+      const patients = patientsInScope(dataset, [cancer]);
+      const baseName = `cox_forest_${model}_${cancer}_${lastEndpoint}`;
+      const capSuffix = `${cancer} · ${epLabel}${state.months > 0 ? ` · ${state.months}-mo` : ""}`;
+      let items, svgStr, noteIsHTML, noteStr;
+      if (model === "multi") {
+        const res = multiItems(recs, selDims, geneVals, patients);
+        if (res.error) {
+          drillEl.innerHTML = `<div class="cx-drill-head"><span class="cx-drill-title">Forest · ${cancer} · multivariate</span></div><div class="status err">${res.error}</div>`;
+          return;
+        }
+        items = res.items;
+        svgStr = forestSVG(items, { caption: `Multivariate Cox · ${capSuffix}`, scheme: "rg" });
+        noteIsHTML = true; noteStr = multiNoteHTML(epLabel, unknown, res.fit, res.covsLen, res.nEvents);
+      } else {
+        items = uniItems(recs, selDims, geneVals, patients);
+        svgStr = forestSVG(items, { caption: `Univariate Cox · ${capSuffix}`, scheme: "rg" });
+        noteIsHTML = false; noteStr = uniNoteText(epLabel, unknown);
+      }
+      drillEl.innerHTML = `
+        <div class="cx-drill-head">
+          <span class="cx-drill-title">Forest · ${cancer} · ${model === "multi" ? "multivariate" : "univariate"}</span>
+          <button class="cx-mini" data-act="svg">SVG</button>
+          <button class="cx-mini" data-act="png">PNG</button>
+          <button class="cx-mini" data-act="csv">CSV</button>
+        </div>
+        <div class="cx-drill-plot">${svgStr}</div>
+        <div class="cx-legend"></div>`;
+      const legendEl = drillEl.querySelector(".cx-legend");
+      if (noteIsHTML) legendEl.innerHTML = noteStr; else legendEl.textContent = noteStr;   // uni note 含「<10」純文字，必須走 textContent
+      const dsvg = drillEl.querySelector(".cx-drill-plot svg");
+      drillEl.querySelector('[data-act="svg"]').addEventListener("click", () => dlSVG(dsvg, baseName));
+      drillEl.querySelector('[data-act="png"]').addEventListener("click", () => dlPNG(dsvg, baseName));
+      drillEl.querySelector('[data-act="csv"]').addEventListener("click", () => dl(new Blob([forestCSV(items, model)], { type: "text/csv" }), baseName + ".csv"));
+    }
+    // heatmap 委派點擊：依 swap 反推 cancerIdx（不 swap→col=cancer；swap→row=cancer）
+    function attachHeatmapClick() {
+      const svg = resultEl.querySelector("svg");
+      if (!svg) return;
+      svg.addEventListener("click", e => {
+        const t = e.target.closest && e.target.closest(".hm-cell"); if (!t) return;
+        const cancerIdx = state.swap ? +t.dataset.r : +t.dataset.c;
+        drawDrillForest(cancerIdx);
+        drillEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
     }
 
     // ── Univariate × 多癌種 → HR heatmap（列=factor、欄=癌種、色=log2 HR；FDR 每癌種欄內）──
@@ -462,9 +534,10 @@ export const coxRegression = {
       const facLab = factors.map(f => f.label);
       let rLab = facLab, cLab = cancers, grid = cells;
       if (state.swap) { rLab = cancers; cLab = facLab; grid = cancers.map((_, ci) => factors.map((_, ri) => cells[ri][ci])); }
-      resultEl.innerHTML = heatmapSVG(rLab, cLab, grid, { colorMax, scheme: state.scheme, legendLabel: "log2 HR", caption: `Univariate Cox HR · ${epLabel}${state.months > 0 ? ` · ${state.months}-mo` : ""}` });
+      resultEl.innerHTML = heatmapSVG(rLab, cLab, grid, { colorMax, scheme: state.scheme, legendLabel: "log2 HR", clickable: true, caption: `Univariate Cox HR · ${epLabel}${state.months > 0 ? ` · ${state.months}-mo` : ""}` });
+      drillCtx = { recs, selDims, geneVals, model: "uni", epLabel, unknown }; attachHeatmapClick();
       const note = document.createElement("div"); note.className = "cx-legend";
-      note.textContent = `Per-factor univariate Cox HR per cancer (${epLabel}). red HR>1 (worse), ${state.scheme === "rb" ? "blue" : "green"} HR<1 (better) · ★ FDR within each cancer · faded = <10 per group or <10 events · grey = not estimable${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`;
+      note.textContent = `Per-factor univariate Cox HR per cancer (${epLabel}). Click a cell for that cancer's forest. red HR>1 (worse), ${state.scheme === "rb" ? "blue" : "green"} HR<1 (better) · ★ FDR within each cancer · faded = <10 per group or <10 events · grey = not estimable${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`;
       resultEl.appendChild(note);
       ["cx-csv", "cx-svg", "cx-png", "cx-swap", "cx-scheme-wrap"].forEach(id => $("#" + id).style.display = "");
       statusEl.textContent = `Done — ${factors.length} factor(s) × ${cancers.length} cancer(s).`;
@@ -527,9 +600,10 @@ export const coxRegression = {
       const facLab = factors.map(f => f.label);
       let rLab = facLab, cLab = cancers, grid = cells;
       if (state.swap) { rLab = cancers; cLab = facLab; grid = cancers.map((_, ci) => factors.map((_, ri) => cells[ri][ci])); }
-      resultEl.innerHTML = heatmapSVG(rLab, cLab, grid, { colorMax, scheme: state.scheme, legendLabel: "log2 adj HR", caption: `Multivariate Cox adjusted HR · ${epLabel}${state.months > 0 ? ` · ${state.months}-mo` : ""}` });
+      resultEl.innerHTML = heatmapSVG(rLab, cLab, grid, { colorMax, scheme: state.scheme, legendLabel: "log2 adj HR", clickable: true, caption: `Multivariate Cox adjusted HR · ${epLabel}${state.months > 0 ? ` · ${state.months}-mo` : ""}` });
+      drillCtx = { recs, selDims, geneVals, model: "multi", epLabel, unknown }; attachHeatmapClick();
       const note = document.createElement("div"); note.className = "cx-legend";
-      note.textContent = `Each cancer = its own multivariate Cox (${epLabel}), adjusted HR per factor. Exploratory pan-cancer — each model adjusts for the factors available in that cancer (sets may differ), so columns are not strictly comparable. red adj.HR>1, ${state.scheme === "rb" ? "blue" : "green"} <1 · ★ FDR within each cancer · faded = EPV<10 · grey = not in model${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`;
+      note.textContent = `Each cancer = its own multivariate Cox (${epLabel}), adjusted HR per factor. Click a cell for that cancer's forest. Exploratory pan-cancer — each model adjusts for the factors available in that cancer (sets may differ), so columns are not strictly comparable. red adj.HR>1, ${state.scheme === "rb" ? "blue" : "green"} <1 · ★ FDR within each cancer · faded = EPV<10 · grey = not in model${unknown.length ? ` · Unrecognized: ${unknown.join(", ")}` : ""}`;
       resultEl.appendChild(note);
       ["cx-csv", "cx-svg", "cx-png", "cx-swap", "cx-scheme-wrap"].forEach(id => $("#" + id).style.display = "");
       statusEl.textContent = `Done — multivariate heatmap, ${factors.length} factor(s) × ${cancers.length} cancer(s).`;
@@ -545,35 +619,41 @@ export const coxRegression = {
         return;
       }
       if (!lastItems) return;
-      let csv, name;
-      if (lastModel === "multi") {
-        csv = "Factor,adjHR,CI_low,CI_high,p_wald\n";
-        lastItems.forEach(it => { csv += `"${it.label}",${it.hr.toFixed(4)},${it.ciLow.toFixed(4)},${it.ciHigh.toFixed(4)},${it.p.toExponential(4)}\n`; });
-        name = `cox_multivariate_${lastCancer}_${lastEndpoint}.csv`;
-      } else {
-        csv = "Factor,HR,CI_low,CI_high,p,q,n_index,n_ref,events\n";
-        lastItems.forEach(it => {
-          if (it.state === "nodata") { csv += `"${it.label}",NA,NA,NA,NA,NA,NA,NA,NA\n`; return; }
-          csv += `"${it.label}",${it.hr.toFixed(4)},${it.ciLow.toFixed(4)},${it.ciHigh.toFixed(4)},${it.p.toExponential(4)},${(it.q != null ? it.q.toExponential(4) : "NA")},${it.n1},${it.n0},${it.events}\n`;
-        });
-        name = `cox_univariate_${lastCancer}_${lastEndpoint}.csv`;
-      }
+      const csv = forestCSV(lastItems, lastModel);
+      const name = `cox_${lastModel === "multi" ? "multivariate" : "univariate"}_${lastCancer}_${lastEndpoint}.csv`;
       dl(new Blob([csv], { type: "text/csv" }), name);
+    }
+    // forest 結果的 CSV（主 forest 與 drill 共用；nodata→NA）
+    function forestCSV(items, model) {
+      if (model === "multi") {
+        let csv = "Factor,adjHR,CI_low,CI_high,p_wald\n";
+        items.forEach(it => { csv += `"${it.label}",${it.hr.toFixed(4)},${it.ciLow.toFixed(4)},${it.ciHigh.toFixed(4)},${it.p.toExponential(4)}\n`; });
+        return csv;
+      }
+      let csv = "Factor,HR,CI_low,CI_high,p,q,n_index,n_ref,events\n";
+      items.forEach(it => {
+        if (it.state === "nodata") { csv += `"${it.label}",NA,NA,NA,NA,NA,NA,NA,NA\n`; return; }
+        csv += `"${it.label}",${it.hr.toFixed(4)},${it.ciLow.toFixed(4)},${it.ciHigh.toFixed(4)},${it.p.toExponential(4)},${(it.q != null ? it.q.toExponential(4) : "NA")},${it.n1},${it.n0},${it.events}\n`;
+      });
+      return csv;
     }
     function firstSVG() { return resultEl.querySelector("svg"); }
     function dl(blob, name) { const u = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = u; a.download = name; a.click(); URL.revokeObjectURL(u); }
-    function downloadSVG() { const svg = firstSVG(); if (!svg) return; dl(new Blob([new XMLSerializer().serializeToString(svg)], { type: "image/svg+xml;charset=utf-8" }), lastSVGName + ".svg"); }
-    function downloadPNG() {
-      const svg = firstSVG(); if (!svg) return;
+    // 指定 svg + 檔名的下載（主圖與 drill 面板共用）
+    function dlSVG(svg, name) { if (!svg) return; dl(new Blob([new XMLSerializer().serializeToString(svg)], { type: "image/svg+xml;charset=utf-8" }), name + ".svg"); }
+    function dlPNG(svg, name) {
+      if (!svg) return;
       const vb = svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal : null;
       const W = vb && vb.width ? vb.width : svg.clientWidth, H = vb && vb.height ? vb.height : svg.clientHeight;
       const scale = Math.max(2, Math.ceil(2400 / W));
       const xml = new XMLSerializer().serializeToString(svg);
       const img = new Image();
-      img.onload = () => { const c = document.createElement("canvas"); c.width = Math.round(W * scale); c.height = Math.round(H * scale); const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height); c.toBlob(b => dl(b, lastSVGName + ".png"), "image/png"); };
+      img.onload = () => { const c = document.createElement("canvas"); c.width = Math.round(W * scale); c.height = Math.round(H * scale); const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height); c.toBlob(b => dl(b, name + ".png"), "image/png"); };
       img.onerror = () => alert("PNG export failed (try SVG).");
       img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(xml);
     }
+    function downloadSVG() { dlSVG(firstSVG(), lastSVGName); }
+    function downloadPNG() { dlPNG(firstSVG(), lastSVGName); }
 
     renderCancers();
     renderDims();

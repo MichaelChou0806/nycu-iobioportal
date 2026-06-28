@@ -161,8 +161,11 @@ KM 生存（OS、tumor-only）。基礎、掃描式（單基因 pan-cancer）。
 - **與其他模組不重複**（Clinical Overview 看臨床分佈不碰表現；這個看表現在臨床組間差異）。但很原始；**未來可考慮**：擴展成用所有 dimensions（像 Clinical Overview 選維度），或評估是否與 Clinical Overview 的單維度視圖合併。目前能用，使用者實測 OK，暫留
 
 ### ⑥ Cox Regression (`coxRegression.js`)
-單一癌種、逐因子做 Cox，畫 **forest plot**（`plots.js` 的 `forestSVG`，log-scale HR 軸、HR=1 參考線、三態 ok/weak/nodata、紅 HR>1 綠 HR<1）。
-- **Model 下拉**：Univariate（每因子各自一個 Cox，用 `coxPH1`，跨因子 FDR）/ Multivariate（所有選到的因子放進**一個** `coxPH`，complete-case，互相校正，adjusted HR；圖例顯示 effective n / events / **EPV 警告**；p = Wald）
+逐因子做 Cox。**癌種 = 多選 chips**（仿 survival/correlation，可拖排序、Sort A–Z/by N、Select all/none）：
+- **1 癌種 → forest plot**（`plots.js` 的 `forestSVG`，log-scale HR 軸、HR=1 參考線、三態 ok/weak/nodata、紅 HR>1 綠 HR<1）
+- **≥2 癌種 → HR heatmap**（列=factor、欄=癌種、色=log2 HR；uni 與 multi 各一張；FDR **每癌種欄內**；rg/rb 配色選單；Swap rows/cols）。**點任一格 → 右側 drill 面板畫該癌種、當前 model 的完整 forest**（仿 correlation `.cr-views`，heatmap 留左、drill 開右；drill 自帶 SVG/PNG/CSV，檔名 `cox_forest_{model}_{cancer}_{ep}`；heatmap 主存檔鍵不變）。點擊依 `state.swap` 反推座標：不 swap→cancerIdx=data-c；swap→cancerIdx=data-r
+- 計算抽成 `uniItems`/`multiItems`（forest 與 drill 共用，輸出與舊單癌種路徑一致）
+- **Model 切換（segmented toggle）**：Univariate（每因子各自一個 Cox，用 `coxPH1`，跨因子 FDR）/ Multivariate（所有選到的因子放進**一個** `coxPH`，complete-case，互相校正，adjusted HR；圖例顯示 effective n / events / **EPV 警告**；p = Wald；heatmap 模式每癌種各建一個模型）
 - **Endpoint 下拉（資料驅動）**：clinical 有 `<EP>`+`<EP>.time` 才列入（TCGA 有 OS/DSS/DFI/PFI），OSCC 自動沿用
 - 基因 = High vs Low（median/tertile/quartile，與其他模組一致）；臨床因子 = advanced vs baseline（label 寫成自我說明 "X vs Y"，不用 A/B）；無資料維度自動灰掉
 - **vital 排除**（= 存活事件本身會完全分離）；**recurrence 預設不選**（post-baseline，名稱後 amber `†` 標註 + 最下面說明）
@@ -203,6 +206,7 @@ GOI 之間兩兩表現相關（Spearman 預設 / Pearson）、tumor-only、**per
 - `kmCurveSVG`：curves 帶 `times[]` 時在 x 軸下方畫 number-at-risk 表（純加法，gated）
 - `corrScatterSVG`：`opts.band`＝95% 回歸信賴帶、`opts.marginals`＝上/右邊緣 histogram（都 gated，immuneCorr 不傳→行為不變）
 - `corrMatrixSVG`：上三角相關矩陣，下三角+對角留白；上三角格子帶 `class="corr-cell" data-i/data-j`（呼叫端委派點擊）；色階固定 ±colorMax
+- `heatmapSVG`：`opts.clickable`（gated）→ 非 nodata 格 `<rect>` 加 `class="hm-cell" data-r/data-c style="cursor:pointer"`（Cox heatmap 點格 drill 用）；**falsy 時輸出與舊版 byte-identical**（其他 6 個呼叫端不傳→不受影響）
 
 **關鍵技術點（踩過坑、別退回去）**：
 

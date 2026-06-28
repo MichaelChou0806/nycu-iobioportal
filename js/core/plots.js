@@ -112,7 +112,9 @@ export function heatmapSVG(rows, cols, cells, opts) {
         s += `<rect x="${x}" y="${y}" width="${cw}" height="${ch}" fill="url(#hatch-${uid})" stroke="#fff"><title>${cell.tip || "no data"}</title></rect>`;
       } else {
         const op = cell.state === "weak" ? 0.45 : 1;
-        s += `<rect x="${x}" y="${y}" width="${cw}" height="${ch}" fill="${divColor(cell.value, vmax, opts.scheme)}" fill-opacity="${op}" stroke="#fff"><title>${cell.tip || ""}</title></rect>`;
+        // 可點格（gated）：opts.clickable 為真時才加屬性，falsy 時輸出與原本完全相同
+        const ca = opts.clickable ? ` class="hm-cell" data-r="${r}" data-c="${c}" style="cursor:pointer"` : "";
+        s += `<rect x="${x}" y="${y}" width="${cw}" height="${ch}" fill="${divColor(cell.value, vmax, opts.scheme)}" fill-opacity="${op}" stroke="#fff"${ca}><title>${cell.tip || ""}</title></rect>`;
         if (cell.state === "weak") s += `<circle cx="${x + cw / 2}" cy="${y + ch / 2}" r="2" fill="#9aa3ad"/>`;
         else if (cell.stars) s += `<text x="${x + cw / 2}" y="${y + ch / 2 + 4}" text-anchor="middle" font-size="12" font-weight="700" fill="#1f2733">${cell.stars}</text>`;
       }
